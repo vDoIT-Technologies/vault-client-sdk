@@ -1,0 +1,21 @@
+{
+  "name": "vault-sdk-dev",
+  "version": "1.0.0",
+  "description": "Vault SDK",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "vDoIT Technologies Ltd, Sector 66, Gurugram, Haryana 122011, India",
+  "contributors": [
+    "Shreyash Gupta <shreyashgupta125@gmail.com>"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.5",
+    "dotenv": "^16.4.7",
+    "form-data": "^4.0.0",
+    "ws": "^8.18.0"
+  }
+}
