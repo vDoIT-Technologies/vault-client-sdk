@@ -34,14 +34,14 @@ class Vault extends EventEmitter {
     const timestamp = Date.now().toString();
     const signature = this.sign(timestamp, {
       apikey: this.apiKey,
-      clientapikey: this.clientApiKey,
+      clientApiKey: this.clientApiKey,
     });
 
     const headers = {
       timestamp: timestamp,
       signature: signature,
       apikey: this.apiKey,
-      clientapikey: this.clientApiKey,
+      "x-client-api-key": this.clientApiKey,
       ...options.headers,
     };
 
@@ -60,7 +60,7 @@ class Vault extends EventEmitter {
 
   // sign generates the signature
   sign(timestamp, data) {
-    const message = this.apiKey + timestamp + JSON.stringify(data);
+    const message = this.apiKey + timestamp;
     return crypto
       .createHmac("sha256", this.apiSecret)
       .update(message)
@@ -74,7 +74,7 @@ class Vault extends EventEmitter {
     // Using the same signing data structure as request() for consistency
     const signData = {
       apikey: this.apiKey,
-      clientapikey: this.clientApiKey
+      clientApiKey: this.clientApiKey
     };
    
     const signature = this.sign(timestamp, signData);
@@ -130,6 +130,38 @@ class Vault extends EventEmitter {
       throw error;
     }
   }
+  async createPlatformUser(email, platformId) {
+     if (!email || !platformId) {
+         throw new Error("Email and Platform ID are required");
+     }
+     try {
+         const response = await this.request(
+             "POST",
+             "/v1/vault-sdk/create-user",
+             { email, platformId }
+         );
+         return response.data;
+     } catch (error) {
+         throw error;
+     }
+  }
+
+  async importVault(vaultId, platformId) {
+      if (!vaultId || !platformId) {
+          throw new Error("Vault ID and Platform ID are required");
+      }
+      try {
+          const response = await this.request(
+              "POST",
+              "/v1/vault-sdk/import-vault",
+              { vaultId, platformId }
+          );
+          return response.data;
+      } catch (error) {
+          throw error;
+      }
+  }
+
   async uploadFile(file, vaultId, parentId) {
     const { buffer, name, type } = file;
     const size = buffer.length;
