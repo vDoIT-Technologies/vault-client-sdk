@@ -162,6 +162,67 @@ class Vault extends EventEmitter {
       }
   }
 
+  async getPresignedUrl({ vaultId, fileName, fileType, fileSize, contentHash, folderId }) {
+    validator.validate({
+      vaultId: { value: vaultId, type: "string", required: true },
+      fileName: { value: fileName, type: "string", required: true },
+      fileSize: { value: fileSize, type: "number", required: true },
+      contentHash: { value: contentHash, type: "string", required: true },
+    });
+
+    try {
+      const response = await this.request(
+        "POST",
+        "/v1/vault-sdk/get-presigned-url",
+        {
+          vaultId,
+          fileName,
+          fileType: fileType || "application/octet-stream",
+          fileSize,
+          contentHash,
+          folderId,
+        }
+      );
+      return response.data;
+    } catch (error) {
+       if (error.response && error.response.data) {
+        throw error.response.data;
+      }
+      throw error;
+    }
+  }
+
+  async registerUpload({ vaultId, fileName, filebaseKey, fileSize, contentHash, folderId }) {
+    validator.validate({
+      vaultId: { value: vaultId, type: "string", required: true },
+      fileName: { value: fileName, type: "string", required: true },
+      filebaseKey: { value: filebaseKey, type: "string", required: true },
+      fileSize: { value: fileSize, type: "number", required: true },
+      contentHash: { value: contentHash, type: "string", required: true },
+    });
+
+    try {
+      const response = await this.request(
+        "POST",
+        "/v1/vault-sdk/register-upload",
+        {
+          vaultId,
+          fileName,
+          filebaseKey,
+          fileSize,
+          contentHash,
+          folderId,
+        }
+      );
+      return response.data;
+    } catch (error) {
+       if (error.response && error.response.data) {
+        throw error.response.data;
+      }
+      throw error;
+    }
+  }
+
   async uploadFile(file, vaultId, parentId) {
     const { buffer, name, type } = file;
     const size = buffer.length;
@@ -169,49 +230,44 @@ class Vault extends EventEmitter {
     // 1. Calculate Hash
     const hash = crypto.createHash('sha256').update(buffer).digest('hex');
 
-    // 2. Get Presigned URL
-    const presignedRes = await this.request(
-      "POST",
-      "/v1/vault-sdk/get-presigned-url",
-      {
-        vaultId: vaultId,
+    try {
+      // 2. Get Presigned URL
+      const presignedRes = await this.getPresignedUrl({
+        vaultId,
         fileName: name,
-        fileType: type || "application/octet-stream",
+        fileType: type,
         fileSize: size,
         contentHash: hash,
-        folderId: parentId,
-      }
-    );
+        folderId: parentId
+      });
 
-    const { url, key, contentType, sanitizedName } = presignedRes.data.data;
+      const { url, key, contentType, sanitizedName } = presignedRes.data;
 
-    // 3. Upload to Storage
-    await axios.put(url, buffer, {
-        headers: {
-            "Content-Type": contentType,
-            "x-amz-meta-original-filename": sanitizedName,
-            "x-amz-meta-content-hash": hash,
-            "x-amz-meta-user-id": vaultId,
-            "x-amz-meta-folder-id": parentId || "root",
-            "x-amz-meta-file-size": size.toString(),
-        }
-    });
+      // 3. Upload to Storage
+      await axios.put(url, buffer, {
+          headers: {
+              "Content-Type": contentType,
+              "x-amz-meta-original-filename": sanitizedName,
+              "x-amz-meta-content-hash": hash,
+              "x-amz-meta-user-id": vaultId,
+              "x-amz-meta-folder-id": parentId || "root",
+              "x-amz-meta-file-size": size.toString(),
+          }
+      });
 
-    // 4. Register Upload
-    const registerRes = await this.request(
-        "POST",
-        "/v1/vault-sdk/register-upload",
-        {
-            vaultId: vaultId,
-            fileName: name,
-            filebaseKey: key,
-            fileSize: size,
-            contentHash: hash,
-            folderId: parentId,
-        }
-    );
+      // 4. Register Upload
+      return await this.registerUpload({
+        vaultId,
+        fileName: name,
+        filebaseKey: key,
+        fileSize: size,
+        contentHash: hash,
+        folderId: parentId
+      });
 
-    return registerRes.data;
+    } catch (error) {
+      throw error;
+    }
   }
 
   async uploadFiles(files, vaultId, parentId = null) {
