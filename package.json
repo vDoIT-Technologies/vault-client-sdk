@@ -1,5 +1,5 @@
 {
-  "name": "vault-sdk-dev",
+  "name": "vault-sdk-staging",
   "version": "1.0.0",
   "description": "Vault SDK",
   "main": "index.js",
