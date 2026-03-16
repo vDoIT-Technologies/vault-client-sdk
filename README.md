@@ -1,85 +1,14 @@
 # Vault SDK
 
-The Vault SDK is a Node.js library that provides seamless integration with the Vault Service. This SDK allows developers to easily manage files, folders, and storage plans, as well as interact with the Twin Protocol backend for secure vault operations.
-
-## Table of Contents
-
-- [Requirements](#requirements)
-  - [Node](#node)
-    - [Node installation on Windows](#node-installation-on-windows)
-    - [Node installation on Ubuntu](#node-installation-on-ubuntu)
-    - [Other Operating Systems](#other-operating-systems)
-- [Install](#install)
-- [Configure environment variables](#configure-environment-variables)
-- [Usage](#usage)
-  - [Initialization](#initialization)
-  - [WebSocket Connection](#websocket-connection)
-- [API Reference](#api-reference)
-  - [File Operations](#file-operations)
-  - [Folder Operations](#folder-operations)
-  - [Storage & Plans](#storage--plans)
-  - [Other Operations](#other-operations)
-- [License](#license)
-
----
-
-## Requirements
-
-To use this SDK, you will need Node.js and npm installed in your environment.
-
-### Node
-
-- #### Node installation on Windows
-
-  Just go on the [official Node.js website](https://nodejs.org/) and download the installer.
-  Also, be sure to have `git` available in your PATH, as `npm` might need it (You can find git [here](https://git-scm.com/)).
-
-- #### Node installation on Ubuntu
-
-  You can install Node.js and npm easily with apt install, just run the following commands:
-
-  ```bash
-  $ sudo apt install nodejs
-  $ sudo apt install npm
-  ```
-
-- #### Other Operating Systems
-
-  You can find more information about the installation on the [official Node.js website](https://nodejs.org/) and the [official NPM website](https://npmjs.org/).
-
-If the installation was successful, you should be able to run the following commands:
-
-```bash
-$ node --version
-v20.13.1
-
-$ npm --version
-10.5.2
-```
+A lightweight Node.js SDK for the Vault service. Upload, organize, and manage files and folders, handle storage plans, and connect via WebSocket for real-time events.
 
 ## Install
 
 ```bash
-$ npm install vault-sdk-dev
+npm install vault-sdk-dev
 ```
 
-## Configure environment variables
-
-To use the SDK, you need to configure the following environment variables:
-
-```bash
-VAULT_ACCESS_KEY
-VAULT_SECRET_KEY
-VAULT_CLIENT_API_KEY
-VAULT_BASE_URL
-VAULT_WS_URL
-```
-
-## Usage
-
-### Initialization
-
-Steps to initialize the SDK:
+## Quick Start
 
 ```javascript
 import Vault from "vault-sdk-dev";
@@ -89,122 +18,254 @@ const vault = new Vault({
   VAULT_SECRET_KEY: "your-secret-key",
   VAULT_CLIENT_API_KEY: "your-client-api-key",
   VAULT_BASE_URL: "https://api.your-service.com",
-  VAULT_WS_URL: "wss://api.your-service.com/ws",
+  VAULT_WS_URL: "wss://api.your-service.com/ws", // optional, for WebSocket
 });
 ```
 
-### WebSocket Connection
-
-To establish a WebSocket connection for real-time updates:
-
-```javascript
-await vault.connectToWebsocket();
-
-vault.on('message', (data) => {
-  console.log('Received message:', data);
-});
-
-vault.on('stream_error', (error) => {
-  console.error('WebSocket error:', error);
-});
-```
+All configuration parameters except `VAULT_WS_URL` are required. The SDK will throw a clear error listing any missing ones.
 
 ## API Reference
 
-### File Operations
+### File Upload
 
-#### `uploadFiles(files, vaultId, parentId)`
-Uploads multiple files to the vault.
+#### `uploadFile(file, vaultId, parentId?)`
+
+Upload a single file to the vault.
+
 ```javascript
-const files = [
-  { name: 'file1.txt', buffer: Buffer.from('content'), type: 'text/plain' }
-];
-const response = await vault.uploadFiles(files, 'vault-id', 'optional-parent-folder-id');
+import fs from "fs";
+
+const result = await vault.uploadFile(
+  {
+    buffer: fs.readFileSync("./photo.jpg"),
+    name: "photo.jpg",
+    type: "image/jpeg", // optional, defaults to "application/octet-stream"
+  },
+  "your-vault-id"
+);
+
+// Upload into a specific folder
+const result = await vault.uploadFile(
+  { buffer: fileBuffer, name: "report.pdf", type: "application/pdf" },
+  "your-vault-id",
+  "parent-folder-id"
+);
 ```
 
-#### `getFiles(vaultId, query)`
-Searches or lists files in the vault.
+#### `uploadFiles(files, vaultId, parentId?)`
+
+Upload multiple files in parallel. Each file is handled independently — one failure won't block the others.
+
+```javascript
+const results = await vault.uploadFiles(
+  [
+    { buffer: buf1, name: "file1.pdf", type: "application/pdf" },
+    { buffer: buf2, name: "file2.jpg", type: "image/jpeg" },
+  ],
+  "your-vault-id"
+);
+
+// Each result has a status:
+// { status: "success", fileName: "file1.pdf", ... }
+// { status: "failed", fileName: "file2.jpg", error: "...", code: "..." }
+```
+
+### File Retrieval
+
+#### `getFiles(vaultId, query?)`
+
+Search for files by name.
+
 ```javascript
 const files = await vault.getFiles('vault-id', 'search-query');
 ```
 
 #### `getAllFiles(vaultId)`
-Retrieves all files in the vault.
+
+Get all files in the vault.
+
 ```javascript
-const allFiles = await vault.getAllFiles('vault-id');
+const allFiles = await vault.getAllFiles("your-vault-id");
 ```
+
+### File Management
 
 #### `deleteFile(vaultId, fileId)`
-Deletes a specific file.
+
+Delete a file.
+
 ```javascript
-await vault.deleteFile('vault-id', 'file-id');
+await vault.deleteFile("your-vault-id", "file-id");
 ```
 
-#### `renameFile(vaultId, itemId, newName)`
-Renames a file or folder.
+#### `renameItem(vaultId, itemId, newName)`
+
+Rename a file or folder.
+
 ```javascript
-await vault.renameFile('vault-id', 'item-id', 'new-name');
+await vault.renameItem("your-vault-id", "item-id", "New Name.pdf");
 ```
+
+### Starred Files
 
 #### `addToStarred(vaultId, fileId, isStarred)`
-Marks or unmarks a file as starred.
+
+Star or unstar a file.
+
 ```javascript
-await vault.addToStarred('vault-id', 'file-id', true);
+await vault.addToStarred("your-vault-id", "file-id", true);
 ```
 
 #### `getStarredFiles(vaultId)`
-Retrieves all starred files.
+
+Get all starred files.
+
 ```javascript
-const starred = await vault.getStarredFiles('vault-id');
+const starred = await vault.getStarredFiles("your-vault-id");
 ```
 
 ### Folder Operations
 
-#### `createFolder(vaultId, folderName, parentId)`
-Creates a new folder.
+#### `createFolder(vaultId, folderName, parentId?)`
+
+Create a new folder. Omit `parentId` to create in root.
+
 ```javascript
-const folder = await vault.createFolder('vault-id', 'New Folder', 'optional-parent-id');
+await vault.createFolder("your-vault-id", "Documents");
+await vault.createFolder("your-vault-id", "Invoices", "parent-folder-id");
 ```
 
 #### `deleteFolder(vaultId, folderId)`
-Deletes a specific folder.
+
+Delete a folder.
+
 ```javascript
-await vault.deleteFolder('vault-id', 'folder-id');
+await vault.deleteFolder("your-vault-id", "folder-id");
 ```
 
 ### Storage & Plans
 
-#### `getAllPlans(vaultId)`
-Retrieves available storage plans.
+#### `getStorageDetails(vaultId)`
+
+Check your vault's storage usage.
+
 ```javascript
-const plans = await vault.getAllPlans('vault-id');
+const storage = await vault.getStorageDetails("your-vault-id");
 ```
 
-#### `getStorageDetails(vaultId)`
-Gets current storage usage details.
+#### `getAllPlans(vaultId)`
+
+Get available storage plans.
+
 ```javascript
-const storage = await vault.getStorageDetails('vault-id');
+const plans = await vault.getAllPlans("your-vault-id");
 ```
 
 #### `buyPlan(vaultId, priceId)`
-Purchases a storage plan.
+
+Purchase a storage plan.
+
 ```javascript
-const purchase = await vault.buyPlan('vault-id', 'price-id');
+const purchase = await vault.buyPlan("your-vault-id", "price-id");
 ```
 
 #### `getSubscriptions(vaultId)`
-Retrieves active subscriptions.
+
+Get active subscriptions.
+
 ```javascript
-const subs = await vault.getSubscriptions('vault-id');
+const subs = await vault.getSubscriptions("your-vault-id");
 ```
 
-### Other Operations
+### Platform Operations
+
+#### `createPlatformUser(email, platformId)`
+
+Create a new platform user.
+
+```javascript
+const user = await vault.createPlatformUser("user@example.com", "platform-id");
+```
+
+#### `importVault(vaultId, platformId)`
+
+Import an existing vault into a platform.
+
+```javascript
+const result = await vault.importVault("vault-id", "platform-id");
+```
+
+### Media
 
 #### `getMedia(vaultId)`
-Fetches media associated with a vault ID.
+
+Fetch media associated with a vault.
+
 ```javascript
-const media = await vault.getMedia('vault-id');
+const media = await vault.getMedia("your-vault-id");
 ```
+
+### WebSocket
+
+#### `connectToWebsocket()`
+
+Establish a real-time WebSocket connection. Requires `VAULT_WS_URL` in the constructor.
+
+```javascript
+await vault.connectToWebsocket();
+
+vault.on("message", (data) => {
+  console.log("Received:", data);
+});
+
+vault.on("stream_error", (error) => {
+  console.error("WebSocket error:", error);
+});
+```
+
+## Error Handling
+
+The SDK provides specific, actionable error messages. All errors include a `code` for programmatic handling.
+
+```javascript
+import Vault, { VaultError, ValidationError } from "vault-sdk-dev";
+
+try {
+  await vault.uploadFile(file, vaultId);
+} catch (error) {
+  if (error instanceof ValidationError) {
+    // Parameter validation failed
+    console.error(error.message); // "[Vault SDK] 'uploadFile': Parameter 'vaultId' must be a valid string..."
+    console.error(error.code);    // "INVALID_PARAMETER"
+    console.error(error.param);   // "vaultId"
+  } else if (error instanceof VaultError) {
+    // API or network error
+    console.error(error.message); // "[Vault SDK] 'uploadFile': Authentication failed..."
+    console.error(error.code);    // "UNAUTHORIZED"
+    console.error(error.status);  // 401
+  }
+}
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `MISSING_CONFIG` | Required configuration parameter not provided |
+| `INVALID_PARAMETER` | Method parameter failed validation |
+| `BAD_REQUEST` | Server rejected the request (400) |
+| `UNAUTHORIZED` | Authentication failed — check your keys (401) |
+| `FORBIDDEN` | API key lacks permission for this operation (403) |
+| `NOT_FOUND` | Requested resource doesn't exist (404) |
+| `CONFLICT` | Resource already exists (409) |
+| `FILE_TOO_LARGE` | File exceeds max upload size (413) |
+| `RATE_LIMITED` | Too many requests — slow down (429) |
+| `SERVER_ERROR` | Server-side error (500) |
+| `NETWORK_ERROR` | No response — check network/URL |
+| `WEBSOCKET_ERROR` | WebSocket connection failed |
+| `STORAGE_UPLOAD_FAILED` | File failed to upload to storage |
+| `PRESIGN_FAILED` | Could not get upload URL |
+| `REGISTER_FAILED` | File uploaded but registration failed |
 
 ## License
 
