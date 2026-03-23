@@ -310,13 +310,22 @@ class Vault extends EventEmitter {
       );
     }
 
-    const { url, key, contentType, sanitizedName } = presignedRes.data;
+    const { url, key, contentType, sanitizedName } = presignedRes;
 
     // Step 3: Upload to S3
     try {
+      const parsedUrl = new URL(url);
+      const metaHeaders = {};
+      parsedUrl.searchParams.forEach((value, key) => {
+        if (key.startsWith("x-amz-meta-")) {
+          metaHeaders[key] = decodeURIComponent(value);
+        }
+      });
+
       await axios.put(url, buffer, {
         headers: {
           "Content-Type": contentType,
+          ...metaHeaders,
         },
       });
     } catch (error) {
@@ -324,7 +333,7 @@ class Vault extends EventEmitter {
       let detail = error.message;
       if (status === 403)
         detail =
-          "The presigned URL has expired or is invalid. Please try uploading again.";
+          "The presigned URL has expired or required signing headers are missing. Please try uploading again.";
       if (status === 413)
         detail = `File "${name}" exceeds the maximum allowed upload size.`;
 
