@@ -317,11 +317,6 @@ class Vault extends EventEmitter {
       await axios.put(url, buffer, {
         headers: {
           "Content-Type": contentType,
-          "x-amz-meta-original-filename": sanitizedName,
-          "x-amz-meta-content-hash": hash,
-          "x-amz-meta-user-id": vaultId,
-          "x-amz-meta-folder-id": parentId || "root",
-          "x-amz-meta-file-size": size.toString(),
         },
       });
     } catch (error) {
