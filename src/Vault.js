@@ -314,18 +314,14 @@ class Vault extends EventEmitter {
 
     // Step 3: Upload to S3
     try {
-      const parsedUrl = new URL(url);
-      const metaHeaders = {};
-      parsedUrl.searchParams.forEach((value, key) => {
-        if (key.startsWith("x-amz-meta-")) {
-          metaHeaders[key] = decodeURIComponent(value);
-        }
-      });
-
       await axios.put(url, buffer, {
         headers: {
           "Content-Type": contentType,
-          ...metaHeaders,
+          "x-amz-meta-original-filename": sanitizedName || name,
+          "x-amz-meta-content-hash": hash,
+          "x-amz-meta-vault-id": vaultId,
+          "x-amz-meta-folder-id": parentId || "root",
+          "x-amz-meta-file-size": size.toString(),
         },
       });
     } catch (error) {
