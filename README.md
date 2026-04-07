@@ -179,20 +179,22 @@ const subs = await vault.getSubscriptions("your-vault-id");
 
 ### Platform Operations
 
-#### `createPlatformUser(email, platformId)`
+#### `createPlatformUser(email, platformId?)`
 
-Create a new platform user.
+Create a new SDK user link. `platformId` is optional.
 
 ```javascript
 const user = await vault.createPlatformUser("user@example.com", "platform-id");
+const sdkUser = await vault.createPlatformUser("user@example.com");
 ```
 
-#### `importVault(vaultId, platformId)`
+#### `importVault(vaultId, platformId?)`
 
-Import an existing vault into a platform.
+Import an existing vault. When `platformId` is omitted, SDK access is enabled and the client is linked directly to the user.
 
 ```javascript
 const result = await vault.importVault("vault-id", "platform-id");
+const resultWithoutPlatform = await vault.importVault("vault-id");
 ```
 
 ### Media
