@@ -562,6 +562,86 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Cancel the active subscription at period end.
+   *
+   * @param {string} vaultId - The vault ID
+   * @returns {Promise<Object>} Cancellation scheduling details
+   *
+   * @example
+   * const result = await vault.cancelSubscription("your-vault-id");
+   */
+  async cancelSubscription(vaultId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+      },
+      "cancelSubscription"
+    );
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/cancel-subscription",
+      { vaultId },
+      { operation: "cancelSubscription" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Schedule an upcoming plan to start after current plan expiry.
+   *
+   * @param {string} vaultId - The vault ID
+   * @param {string} priceId - Stripe price ID for the upcoming plan
+   * @returns {Promise<Object>} Upcoming plan scheduling result
+   *
+   * @example
+   * const result = await vault.createUpcomingPlan("your-vault-id", "price-id");
+   */
+  async createUpcomingPlan(vaultId, priceId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        priceId: { value: priceId, type: "string" },
+      },
+      "createUpcomingPlan"
+    );
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/upcoming",
+      { vaultId, priceId },
+      { operation: "createUpcomingPlan" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Cancel auto-renewal for a pending upcoming plan.
+   *
+   * @param {string} vaultId - The vault ID
+   * @returns {Promise<Object>} Upcoming plan cancellation result
+   *
+   * @example
+   * const result = await vault.cancelUpcomingPlan("your-vault-id");
+   */
+  async cancelUpcomingPlan(vaultId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+      },
+      "cancelUpcomingPlan"
+    );
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/upcoming/cancel",
+      { vaultId },
+      { operation: "cancelUpcomingPlan" }
+    );
+    return response.data;
+  }
+
+  /**
    * Get active subscriptions for the vault.
    *
    * @param {string} vaultId - The vault ID

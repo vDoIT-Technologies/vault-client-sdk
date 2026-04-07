@@ -169,6 +169,30 @@ Purchase a storage plan.
 const purchase = await vault.buyPlan("your-vault-id", "price-id");
 ```
 
+#### `cancelSubscription(vaultId)`
+
+Cancel the active subscription at period end.
+
+```javascript
+const result = await vault.cancelSubscription("your-vault-id");
+```
+
+#### `createUpcomingPlan(vaultId, priceId)`
+
+Schedule an upcoming plan (starts after current active plan ends).
+
+```javascript
+const result = await vault.createUpcomingPlan("your-vault-id", "price-id");
+```
+
+#### `cancelUpcomingPlan(vaultId)`
+
+Cancel auto-renewal for a pending upcoming plan.
+
+```javascript
+const result = await vault.cancelUpcomingPlan("your-vault-id");
+```
+
 #### `getSubscriptions(vaultId)`
 
 Get active subscriptions.
