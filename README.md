@@ -204,6 +204,30 @@ Purchase a storage plan.
 const purchase = await vault.buyPlan("your-vault-id", "price-id");
 ```
 
+#### `cancelSubscription(vaultId)`
+
+Cancel the active subscription at period end.
+
+```javascript
+const result = await vault.cancelSubscription("your-vault-id");
+```
+
+#### `createUpcomingPlan(vaultId, priceId)`
+
+Schedule an upcoming plan (starts after current active plan ends).
+
+```javascript
+const result = await vault.createUpcomingPlan("your-vault-id", "price-id");
+```
+
+#### `cancelUpcomingPlan(vaultId)`
+
+Cancel auto-renewal for a pending upcoming plan.
+
+```javascript
+const result = await vault.cancelUpcomingPlan("your-vault-id");
+```
+
 #### `getSubscriptions(vaultId)`
 
 Get active subscriptions.
@@ -214,20 +238,22 @@ const subs = await vault.getSubscriptions("your-vault-id");
 
 ### Platform Operations
 
-#### `createPlatformUser(email, platformId)`
+#### `createPlatformUser(email, platformId?)`
 
-Create a new platform user.
+Create a new SDK user link. `platformId` is optional.
 
 ```javascript
 const user = await vault.createPlatformUser("user@example.com", "platform-id");
+const sdkUser = await vault.createPlatformUser("user@example.com");
 ```
 
-#### `importVault(vaultId, platformId)`
+#### `importVault(vaultId, platformId?)`
 
-Import an existing vault into a platform.
+Import an existing vault. When `platformId` is omitted, SDK access is enabled and the client is linked directly to the user.
 
 ```javascript
 const result = await vault.importVault("vault-id", "platform-id");
+const resultWithoutPlatform = await vault.importVault("vault-id");
 ```
 
 ### Media

@@ -562,6 +562,86 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Cancel the active subscription at period end.
+   *
+   * @param {string} vaultId - The vault ID
+   * @returns {Promise<Object>} Cancellation scheduling details
+   *
+   * @example
+   * const result = await vault.cancelSubscription("your-vault-id");
+   */
+  async cancelSubscription(vaultId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+      },
+      "cancelSubscription"
+    );
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/cancel-subscription",
+      { vaultId },
+      { operation: "cancelSubscription" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Schedule an upcoming plan to start after current plan expiry.
+   *
+   * @param {string} vaultId - The vault ID
+   * @param {string} priceId - Stripe price ID for the upcoming plan
+   * @returns {Promise<Object>} Upcoming plan scheduling result
+   *
+   * @example
+   * const result = await vault.createUpcomingPlan("your-vault-id", "price-id");
+   */
+  async createUpcomingPlan(vaultId, priceId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        priceId: { value: priceId, type: "string" },
+      },
+      "createUpcomingPlan"
+    );
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/upcoming",
+      { vaultId, priceId },
+      { operation: "createUpcomingPlan" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Cancel auto-renewal for a pending upcoming plan.
+   *
+   * @param {string} vaultId - The vault ID
+   * @returns {Promise<Object>} Upcoming plan cancellation result
+   *
+   * @example
+   * const result = await vault.cancelUpcomingPlan("your-vault-id");
+   */
+  async cancelUpcomingPlan(vaultId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+      },
+      "cancelUpcomingPlan"
+    );
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/upcoming/cancel",
+      { vaultId },
+      { operation: "cancelUpcomingPlan" }
+    );
+    return response.data;
+  }
+
+  /**
    * Get active subscriptions for the vault.
    *
    * @param {string} vaultId - The vault ID
@@ -771,25 +851,38 @@ class Vault extends EventEmitter {
    * Create a new platform user.
    *
    * @param {string} email - User's email address
-   * @param {string} platformId - The platform ID to create the user in
+   * @param {string} [platformId] - Optional platform ID to create the user in
    * @returns {Promise<Object>} Created user details
    *
    * @example
    * const user = await vault.createPlatformUser("user@example.com", "platform-id");
+   * const sdkUser = await vault.createPlatformUser("user@example.com"); // platform-less SDK user link
    */
   async createPlatformUser(email, platformId) {
+    const normalizedPlatformId =
+      typeof platformId === "string" ? platformId.trim() : platformId;
+
     validator.validate(
       {
         email: { value: email, type: "string" },
-        platformId: { value: platformId, type: "string" },
+        platformId: {
+          value: normalizedPlatformId || undefined,
+          type: "string",
+          required: false,
+        },
       },
       "createPlatformUser"
     );
 
+    const payload = { email };
+    if (normalizedPlatformId) {
+      payload.platformId = normalizedPlatformId;
+    }
+
     const response = await this.request(
       "POST",
       "/v1/vault-sdk/create-user",
-      { email, platformId },
+      payload,
       { operation: "createPlatformUser" }
     );
     return response.data;
@@ -799,25 +892,38 @@ class Vault extends EventEmitter {
    * Import an existing vault into a platform.
    *
    * @param {string} vaultId - The vault ID to import
-   * @param {string} platformId - The target platform ID
+   * @param {string} [platformId] - Optional target platform ID
    * @returns {Promise<Object>} Import result
    *
    * @example
    * const result = await vault.importVault("vault-id", "platform-id");
+   * const result = await vault.importVault("vault-id"); // link client + enable SDK access without a platform
    */
   async importVault(vaultId, platformId) {
+    const normalizedPlatformId =
+      typeof platformId === "string" ? platformId.trim() : platformId;
+
     validator.validate(
       {
         vaultId: { value: vaultId, type: "string" },
-        platformId: { value: platformId, type: "string" },
+        platformId: {
+          value: normalizedPlatformId || undefined,
+          type: "string",
+          required: false,
+        },
       },
       "importVault"
     );
 
+    const payload = { vaultId };
+    if (normalizedPlatformId) {
+      payload.platformId = normalizedPlatformId;
+    }
+
     const response = await this.request(
       "POST",
       "/v1/vault-sdk/import-vault",
-      { vaultId, platformId },
+      payload,
       { operation: "importVault" }
     );
     return response.data;
