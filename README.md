@@ -221,6 +221,23 @@ const result = await vault.importVault("vault-id", "platform-id");
 const resultWithoutPlatform = await vault.importVault("vault-id");
 ```
 
+#### `syncPlatformClient(payload)`
+
+Sync a client's Vault platform metadata into the Vault platform store.
+
+```javascript
+await vault.syncPlatformClient({
+  clientId: "client-id",
+  clientName: "Dev Client",
+  clientApiKey: "client-api-key",
+  platformId: "platform-id",
+  accessKey: "access-key",
+  secretKey: "secret-key",
+  sdkAccess: true,
+  vaultSdkAccess: true,
+});
+```
+
 ### Media
 
 #### `getMedia(vaultId)`
