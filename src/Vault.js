@@ -848,17 +848,20 @@ class Vault extends EventEmitter {
   // ─── Platform Operations ──────────────────────────────────────
 
   /**
-   * Create a new platform user.
+   * Create a vault for a user, or link an existing one to your client.
+   *
+   * Idempotent: if a user already exists for the email, they are linked to your
+   * client API key and returned instead of erroring.
    *
    * @param {string} email - User's email address
-   * @param {string} [platformId] - Optional platform ID to create the user in
-   * @returns {Promise<Object>} Created user details
+   * @param {string} [platformId] - Optional platform ID to associate the user with
+   * @returns {Promise<Object>} Created (or existing) user details, including vaultId
    *
    * @example
-   * const user = await vault.createPlatformUser("user@example.com", "platform-id");
-   * const sdkUser = await vault.createPlatformUser("user@example.com"); // platform-less SDK user link
+   * const user = await vault.createVault("user@example.com", "platform-id");
+   * const sdkUser = await vault.createVault("user@example.com"); // platform-less SDK user link
    */
-  async createPlatformUser(email, platformId) {
+  async createVault(email, platformId) {
     const normalizedPlatformId =
       typeof platformId === "string" ? platformId.trim() : platformId;
 
@@ -871,7 +874,7 @@ class Vault extends EventEmitter {
           required: false,
         },
       },
-      "createPlatformUser"
+      "createVault"
     );
 
     const payload = { email };
@@ -883,7 +886,7 @@ class Vault extends EventEmitter {
       "POST",
       "/v1/vault-sdk/create-user",
       payload,
-      { operation: "createPlatformUser" }
+      { operation: "createVault" }
     );
     return response.data;
   }
