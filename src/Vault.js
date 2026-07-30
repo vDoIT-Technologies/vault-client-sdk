@@ -989,35 +989,6 @@ class Vault extends EventEmitter {
     return response.data;
   }
 
-  // ─── Media ────────────────────────────────────────────────────
-
-  /**
-   * Fetch media associated with a vault ID.
-   *
-   * @param {string} vaultId - The vault ID
-   * @returns {Promise<Object>} Media data
-   *
-   * @example
-   * const media = await vault.getMedia("your-vault-id");
-   */
-  async getMedia(vaultId) {
-    validator.validate(
-      {
-        vaultId: { value: vaultId, type: "string" },
-      },
-      "getMedia"
-    );
-
-    const queryString = `?vaultId=${encodeURIComponent(vaultId)}`;
-    const response = await this.request(
-      "GET",
-      `/v1/vault-sdk/get-media${queryString}`,
-      undefined,
-      { operation: "getMedia" }
-    );
-    return response.data;
-  }
-
   /**
    * Alias for renameItem() — kept for backward compatibility.
    * @param {string} vaultId

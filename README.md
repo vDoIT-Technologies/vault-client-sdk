@@ -238,16 +238,6 @@ await vault.syncPlatformClient({
 });
 ```
 
-### Media
-
-#### `getMedia(vaultId)`
-
-Fetch media associated with a vault.
-
-```javascript
-const media = await vault.getMedia("your-vault-id");
-```
-
 ### WebSocket
 
 #### `connectToWebsocket()`
