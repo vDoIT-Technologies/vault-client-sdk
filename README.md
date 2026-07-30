@@ -45,7 +45,7 @@ const result = await vault.uploadFile(
 );
 
 // Upload into a specific folder
-const result = await vault.uploadFile(
+const inFolder = await vault.uploadFile(
   { buffer: fileBuffer, name: "report.pdf", type: "application/pdf" },
   "your-vault-id",
   "parent-folder-id"
@@ -68,6 +68,66 @@ const results = await vault.uploadFiles(
 // Each result has a status:
 // { status: "success", fileName: "file1.pdf", ... }
 // { status: "failed", fileName: "file2.jpg", error: "...", code: "..." }
+```
+
+### Manual File Upload
+
+`uploadFile()` runs the whole flow for you. Do it manually when you need progress reporting, streaming, or custom handling of very large files.
+
+#### Step 1: `getPresignedUrl({ vaultId, fileName, fileType, fileSize, contentHash, folderId })`
+
+Get an upload URL. `contentHash` must be a 64-character hex SHA-256 of the exact bytes you're going to upload.
+
+```javascript
+import crypto from "crypto";
+import fs from "fs";
+
+const fileBuffer = fs.readFileSync("./large-video.mp4");
+const fileSize = fileBuffer.length;
+const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+
+const presign = await vault.getPresignedUrl({
+  vaultId: "your-vault-id",
+  fileName: "large-video.mp4",
+  fileType: "video/mp4",
+  fileSize,
+  contentHash,
+  folderId: null, // or a folder ID
+});
+
+const { url, key, contentType, metadata } = presign.data;
+```
+
+#### Step 2: Upload to storage
+
+The URL is valid for one hour and is signed together with its metadata. Send back exactly the `metadata` object you were given, prefixed with `x-amz-meta-` — adding, dropping, or renaming a key invalidates the signature and the upload fails with a 403.
+
+```javascript
+import axios from "axios";
+
+await axios.put(url, fileBuffer, {
+  headers: {
+    "Content-Type": contentType,
+    ...Object.fromEntries(
+      Object.entries(metadata).map(([k, v]) => [`x-amz-meta-${k}`, v])
+    ),
+  },
+});
+```
+
+#### Step 3: `registerUpload({ vaultId, fileName, filebaseKey, fileSize, contentHash, folderId })`
+
+Confirm the upload with the backend. A file uploaded in step 2 but never registered here won't appear in the vault.
+
+```javascript
+const registered = await vault.registerUpload({
+  vaultId: "your-vault-id",
+  fileName: "large-video.mp4",
+  filebaseKey: key, // the `key` from step 1
+  fileSize,
+  contentHash,
+  folderId: null,
+});
 ```
 
 ### File Retrieval
@@ -203,13 +263,13 @@ const subs = await vault.getSubscriptions("your-vault-id");
 
 ### Platform Operations
 
-#### `createPlatformUser(email, platformId?)`
+#### `createVault(email, platformId?)`
 
 Create a new SDK user link. `platformId` is optional.
 
 ```javascript
-const user = await vault.createPlatformUser("user@example.com", "platform-id");
-const sdkUser = await vault.createPlatformUser("user@example.com");
+const user = await vault.createVault("user@example.com", "platform-id");
+const sdkUser = await vault.createVault("user@example.com");
 ```
 
 #### `importVault(vaultId, platformId?)`
@@ -219,23 +279,6 @@ Import an existing vault. When `platformId` is omitted, SDK access is enabled an
 ```javascript
 const result = await vault.importVault("vault-id", "platform-id");
 const resultWithoutPlatform = await vault.importVault("vault-id");
-```
-
-#### `syncPlatformClient(payload)`
-
-Sync a client's Vault platform metadata into the Vault platform store.
-
-```javascript
-await vault.syncPlatformClient({
-  clientId: "client-id",
-  clientName: "Dev Client",
-  clientApiKey: "client-api-key",
-  platformId: "platform-id",
-  accessKey: "access-key",
-  secretKey: "secret-key",
-  sdkAccess: true,
-  vaultSdkAccess: true,
-});
 ```
 
 ### WebSocket

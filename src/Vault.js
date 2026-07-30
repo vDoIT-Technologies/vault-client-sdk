@@ -848,17 +848,20 @@ class Vault extends EventEmitter {
   // ─── Platform Operations ──────────────────────────────────────
 
   /**
-   * Create a new platform user.
+   * Create a vault for a user, or link an existing one to your client.
+   *
+   * Idempotent: if a user already exists for the email, they are linked to your
+   * client API key and returned instead of erroring.
    *
    * @param {string} email - User's email address
-   * @param {string} [platformId] - Optional platform ID to create the user in
-   * @returns {Promise<Object>} Created user details
+   * @param {string} [platformId] - Optional platform ID to associate the user with
+   * @returns {Promise<Object>} Created (or existing) user details, including vaultId
    *
    * @example
-   * const user = await vault.createPlatformUser("user@example.com", "platform-id");
-   * const sdkUser = await vault.createPlatformUser("user@example.com"); // platform-less SDK user link
+   * const user = await vault.createVault("user@example.com", "platform-id");
+   * const sdkUser = await vault.createVault("user@example.com"); // platform-less SDK user link
    */
-  async createPlatformUser(email, platformId) {
+  async createVault(email, platformId) {
     const normalizedPlatformId =
       typeof platformId === "string" ? platformId.trim() : platformId;
 
@@ -871,7 +874,7 @@ class Vault extends EventEmitter {
           required: false,
         },
       },
-      "createPlatformUser"
+      "createVault"
     );
 
     const payload = { email };
@@ -883,7 +886,7 @@ class Vault extends EventEmitter {
       "POST",
       "/v1/vault-sdk/create-user",
       payload,
-      { operation: "createPlatformUser" }
+      { operation: "createVault" }
     );
     return response.data;
   }
@@ -925,66 +928,6 @@ class Vault extends EventEmitter {
       "/v1/vault-sdk/import-vault",
       payload,
       { operation: "importVault" }
-    );
-    return response.data;
-  }
-
-  /**
-   * Sync platform client metadata into the Vault platform store.
-   *
-   * @param {Object} payload - Platform client metadata payload
-   * @param {string} payload.clientId - Source client ID
-   * @param {string} payload.clientName - Source client name
-   * @param {string} payload.clientApiKey - Current client API key
-   * @param {string} payload.platformId - Stable platform ID
-   * @param {string} [payload.accessKey] - Current Vault SDK access key
-   * @param {string} [payload.secretKey] - Current Vault SDK secret key
-   * @param {boolean} payload.sdkAccess - Whether SDK access is enabled
-   * @param {boolean} payload.vaultSdkAccess - Whether Vault SDK access is enabled
-   * @returns {Promise<Object>} Sync result
-   *
-   * @example
-   * await vault.syncPlatformClient({
-   *   clientId: "client-id",
-   *   clientName: "Dev Client",
-   *   clientApiKey: "client-api-key",
-   *   platformId: "platform-id",
-   *   accessKey: "access-key",
-   *   secretKey: "secret-key",
-   *   sdkAccess: true,
-   *   vaultSdkAccess: true,
-   * });
-   */
-  async syncPlatformClient(payload) {
-    validator.validate(
-      {
-        payload: { value: payload, type: "object" },
-        clientId: { value: payload?.clientId, type: "string" },
-        clientName: { value: payload?.clientName, type: "string" },
-        clientApiKey: { value: payload?.clientApiKey, type: "string" },
-        platformId: { value: payload?.platformId, type: "string" },
-        sdkAccess: { value: payload?.sdkAccess, type: "boolean" },
-        vaultSdkAccess: { value: payload?.vaultSdkAccess, type: "boolean" },
-      },
-      "syncPlatformClient"
-    );
-
-    const normalizedPayload = {
-      clientId: payload.clientId.trim(),
-      clientName: payload.clientName.trim(),
-      clientApiKey: payload.clientApiKey.trim(),
-      platformId: payload.platformId.trim(),
-      accessKey: typeof payload.accessKey === "string" ? payload.accessKey.trim() : "",
-      secretKey: typeof payload.secretKey === "string" ? payload.secretKey.trim() : "",
-      sdkAccess: payload.sdkAccess,
-      vaultSdkAccess: payload.vaultSdkAccess,
-    };
-
-    const response = await this.request(
-      "POST",
-      "/v1/vault-sdk/platform-client/sync",
-      normalizedPayload,
-      { operation: "syncPlatformClient" }
     );
     return response.data;
   }
