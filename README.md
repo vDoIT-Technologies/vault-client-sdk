@@ -281,16 +281,6 @@ const result = await vault.importVault("vault-id", "platform-id");
 const resultWithoutPlatform = await vault.importVault("vault-id");
 ```
 
-### Media
-
-#### `getMedia(vaultId)`
-
-Fetch media associated with a vault.
-
-```javascript
-const media = await vault.getMedia("your-vault-id");
-```
-
 ### WebSocket
 
 #### `connectToWebsocket()`
