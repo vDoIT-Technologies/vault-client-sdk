@@ -3,6 +3,14 @@ import axios from "axios";
 import WebSocket from "ws";
 import EventEmitter from "events";
 import { validator, VaultError, HTTP_ERROR_MAP } from "./utils/validationError.js";
+import { sanitizeFileName } from "./utils/sanitizeFileName.js";
+import {
+  MAX_FILE_SIZE,
+  baseName,
+  contentTypeFor,
+  formatFileSize,
+  resolveFile,
+} from "./utils/file.js";
 
 class Vault extends EventEmitter {
   /**
@@ -224,105 +232,112 @@ class Vault extends EventEmitter {
   // ─── File Upload ──────────────────────────────────────────────
 
   /**
-   * Upload a single file to the vault.
+   * Upload a file to the vault.
    *
-   * The upload is a 3-step process:
-   * 1. Compute SHA-256 hash of the file content
-   * 2. Get a presigned S3 URL from the server
-   * 3. Upload directly to S3, then register the upload
-   *
-   * @param {Object} file - File object to upload
-   * @param {Buffer|Uint8Array} file.buffer - File content as a buffer
-   * @param {string} file.name - File name (e.g. "document.pdf")
-   * @param {string} [file.type] - MIME type (e.g. "application/pdf"). Defaults to "application/octet-stream"
+   * @param {string|Object|Blob} file - A path on disk, a File/Blob, or an
+   *   object with the content — { buffer, name } / { path } / { data, name }.
+   *   `type` (or `mimeType`/`contentType`) is optional; it is derived from the
+   *   file extension when omitted.
    * @param {string} vaultId - The vault ID to upload to
    * @param {string} [parentId] - Parent folder ID (omit or null for root)
-   * @returns {Promise<Object>} Upload result with file details
+   * @returns {Promise<Object>} Registration response with the stored file details
    *
-   * @throws {VaultError} If upload fails at any step
+   * @throws {VaultError} If the file is unreadable, invalid, or the upload fails at any step
    * @throws {ValidationError} If required parameters are missing/invalid
-   *
-   * @example
-   * import fs from "fs";
-   * const fileBuffer = fs.readFileSync("./photo.jpg");
-   * const result = await vault.uploadFile(
-   *   { buffer: fileBuffer, name: "photo.jpg", type: "image/jpeg" },
-   *   "your-vault-id"
-   * );
    */
-  async uploadFile(file, vaultId, parentId) {
+  async uploadFile(file, vaultId, parentId = null) {
     validator.validate(
       {
-        file: {
-          value: file,
-          type: "object",
-          message:
-            "[Vault SDK] 'uploadFile': The 'file' parameter must be an object with { buffer, name } properties.",
-        },
         vaultId: { value: vaultId, type: "string" },
       },
       "uploadFile"
     );
 
-    if (!file.buffer) {
+    // Read the file and derive everything the upload needs from it.
+    const { buffer, name, type } = await resolveFile(file, "uploadFile");
+    const fileSize = buffer.length;
+
+    if (fileSize === 0) {
       throw new VaultError(
-        "[Vault SDK] 'uploadFile': file.buffer is required. Provide the file content as a Buffer or Uint8Array.",
+        `[Vault SDK] 'uploadFile': "${name}" is empty. Cannot upload a zero-byte file.`,
         { code: "INVALID_PARAMETER", operation: "uploadFile" }
       );
     }
 
-    if (!file.name || typeof file.name !== "string" || !file.name.trim()) {
+    if (fileSize > MAX_FILE_SIZE) {
       throw new VaultError(
-        "[Vault SDK] 'uploadFile': file.name is required. Provide the file name as a non-empty string (e.g. 'document.pdf').",
-        { code: "INVALID_PARAMETER", operation: "uploadFile" }
+        `[Vault SDK] 'uploadFile': "${name}" is ${formatFileSize(fileSize)}, ` +
+          `which exceeds the maximum upload size of ${formatFileSize(MAX_FILE_SIZE)}.`,
+        { code: "FILE_TOO_LARGE", operation: "uploadFile" }
       );
     }
 
-    const { buffer, name, type } = file;
-    const size = buffer.length;
+    const fileName = sanitizeFileName(name);
+    const fileType = type || contentTypeFor(fileName);
+    const contentHash = crypto
+      .createHash("sha256")
+      .update(buffer)
+      .digest("hex");
 
-    if (size === 0) {
-      throw new VaultError(
-        "[Vault SDK] 'uploadFile': file.buffer is empty. Cannot upload a zero-byte file.",
-        { code: "INVALID_PARAMETER", operation: "uploadFile" }
-      );
-    }
-
-    // Step 1: Calculate SHA-256 hash
-    const hash = crypto.createHash("sha256").update(buffer).digest("hex");
-
-    // Step 2: Get presigned URL
-    let presignedRes;
+    // Step 1: Get the presigned storage URL
+    let presign;
     try {
-      presignedRes = await this.getPresignedUrl({
-        vaultId,
-        fileName: name,
-        fileType: type || "application/octet-stream",
-        fileSize: size,
-        contentHash: hash,
-        folderId: parentId,
-      });
+      const response = await this.request(
+        "POST",
+        "/v1/vault-sdk/get-presigned-url",
+        {
+          vaultId,
+          fileName,
+          fileType,
+          fileSize,
+          contentHash,
+          folderId: parentId,
+        },
+        { operation: "uploadFile" }
+      );
+      presign = response.data?.data ?? response.data;
     } catch (error) {
       if (error instanceof VaultError) throw error;
       throw new VaultError(
-        `[Vault SDK] 'uploadFile': Failed to get upload URL for "${name}" — ${error.message}`,
+        `[Vault SDK] 'uploadFile': Failed to get an upload URL for "${fileName}" — ${error.message}`,
         { code: "PRESIGN_FAILED", operation: "uploadFile" }
       );
     }
 
-    const { url, key, contentType, sanitizedName } = presignedRes;
+    const { url, key, contentType, sanitizedName, userId, metadata } =
+      presign || {};
 
-    // Step 3: Upload to S3
+    if (!url || !key) {
+      throw new VaultError(
+        `[Vault SDK] 'uploadFile': The server did not return an upload URL for "${fileName}".`,
+        { code: "PRESIGN_FAILED", operation: "uploadFile", data: presign }
+      );
+    }
+
+    // Step 2: Upload the bytes to storage.
+    const metaHeaders = metadata
+      ? Object.fromEntries(
+          Object.entries(metadata).map(([metaKey, value]) => [
+            `x-amz-meta-${metaKey}`,
+            String(value),
+          ])
+        )
+      : {
+          "x-amz-meta-original-filename": sanitizedName || fileName,
+          "x-amz-meta-content-hash": contentHash,
+          "x-amz-meta-user-id": String(userId ?? ""),
+          "x-amz-meta-folder-id": parentId || "root",
+          "x-amz-meta-file-size": fileSize.toString(),
+        };
+
     try {
       await axios.put(url, buffer, {
         headers: {
-          "Content-Type": contentType,
-          "x-amz-meta-original-filename": sanitizedName || name,
-          "x-amz-meta-content-hash": hash,
-          "x-amz-meta-vault-id": vaultId,
-          "x-amz-meta-folder-id": parentId || "root",
-          "x-amz-meta-file-size": size.toString(),
+          "Content-Type": contentType || fileType,
+          ...metaHeaders,
         },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
       });
     } catch (error) {
       const status = error.response?.status;
@@ -331,10 +346,10 @@ class Vault extends EventEmitter {
         detail =
           "The presigned URL has expired or required signing headers are missing. Please try uploading again.";
       if (status === 413)
-        detail = `File "${name}" exceeds the maximum allowed upload size.`;
+        detail = `File "${fileName}" exceeds the maximum allowed upload size.`;
 
       throw new VaultError(
-        `[Vault SDK] 'uploadFile': Failed to upload "${name}" to storage — ${detail}`,
+        `[Vault SDK] 'uploadFile': Failed to upload "${fileName}" to storage — ${detail}`,
         {
           status,
           code: "STORAGE_UPLOAD_FAILED",
@@ -343,20 +358,26 @@ class Vault extends EventEmitter {
       );
     }
 
-    // Step 4: Register the upload
+    // Step 3: Register the upload 
     try {
-      return await this.registerUpload({
-        vaultId,
-        fileName: name,
-        filebaseKey: key,
-        fileSize: size,
-        contentHash: hash,
-        folderId: parentId,
-      });
+      const response = await this.request(
+        "POST",
+        "/v1/vault-sdk/register-upload",
+        {
+          vaultId,
+          fileName: sanitizedName || fileName,
+          filebaseKey: key,
+          fileSize,
+          contentHash,
+          folderId: parentId,
+        },
+        { operation: "uploadFile" }
+      );
+      return response.data;
     } catch (error) {
       if (error instanceof VaultError) throw error;
       throw new VaultError(
-        `[Vault SDK] 'uploadFile': File "${name}" was uploaded to storage but failed to register. ` +
+        `[Vault SDK] 'uploadFile': File "${fileName}" was uploaded to storage but failed to register. ` +
           `Please contact support if this persists — ${error.message}`,
         { code: "REGISTER_FAILED", operation: "uploadFile" }
       );
@@ -368,17 +389,14 @@ class Vault extends EventEmitter {
    *
    * Each file is uploaded independently. Failed uploads do not block others.
    *
-   * @param {Array<Object>} files - Array of file objects, each with { buffer, name, type? }
+   * @param {Array<string|Object|Blob>} files - Array of files, in any form uploadFile() accepts
    * @param {string} vaultId - The vault ID to upload to
    * @param {string} [parentId] - Parent folder ID (omit or null for root)
    * @returns {Promise<Array<Object>>} Array of results, each with status "success" or "failed"
    *
    * @example
    * const results = await vault.uploadFiles(
-   *   [
-   *     { buffer: buf1, name: "file1.pdf", type: "application/pdf" },
-   *     { buffer: buf2, name: "file2.jpg", type: "image/jpeg" },
-   *   ],
+   *   ["./file1.pdf", { buffer: buf2, name: "file2.jpg" }],
    *   "your-vault-id"
    * );
    */
@@ -397,19 +415,18 @@ class Vault extends EventEmitter {
     );
 
     const uploadPromises = files.map(async (file, index) => {
+      const label =
+        baseName(
+          typeof file === "string" ? file : file?.name || file?.path || ""
+        ) || `file[${index}]`;
+
       try {
-        if (!file || typeof file !== "object") {
-          throw new VaultError(
-            `File at index ${index} is not a valid object. Each file must have { buffer, name }.`,
-            { code: "INVALID_PARAMETER", operation: "uploadFiles" }
-          );
-        }
         const result = await this.uploadFile(file, vaultId, parentId);
-        return { ...result, status: "success", fileName: file.name };
+        return { ...result, status: "success", fileName: label };
       } catch (error) {
         return {
           status: "failed",
-          fileName: file?.name || `file[${index}]`,
+          fileName: label,
           error: error.message,
           code: error.code || "UPLOAD_FAILED",
         };
@@ -943,84 +960,6 @@ class Vault extends EventEmitter {
     return this.renameItem(vaultId, itemId, newName);
   }
 
-  // ─── Internal Helpers ─────────────────────────────────────────
-
-  /**
-   * Internal: Get a presigned S3 URL for file upload.
-   * @private
-   */
-  async getPresignedUrl({
-    vaultId,
-    fileName,
-    fileType,
-    fileSize,
-    contentHash,
-    folderId,
-  }) {
-    validator.validate(
-      {
-        vaultId: { value: vaultId, type: "string" },
-        fileName: { value: fileName, type: "string" },
-        fileSize: { value: fileSize, type: "number" },
-        contentHash: { value: contentHash, type: "string" },
-      },
-      "getPresignedUrl"
-    );
-
-    const response = await this.request(
-      "POST",
-      "/v1/vault-sdk/get-presigned-url",
-      {
-        vaultId,
-        fileName,
-        fileType: fileType || "application/octet-stream",
-        fileSize,
-        contentHash,
-        folderId,
-      },
-      { operation: "getPresignedUrl" }
-    );
-    return response.data;
-  }
-
-  /**
-   * Internal: Register a completed file upload with the backend.
-   * @private
-   */
-  async registerUpload({
-    vaultId,
-    fileName,
-    filebaseKey,
-    fileSize,
-    contentHash,
-    folderId,
-  }) {
-    validator.validate(
-      {
-        vaultId: { value: vaultId, type: "string" },
-        fileName: { value: fileName, type: "string" },
-        filebaseKey: { value: filebaseKey, type: "string" },
-        fileSize: { value: fileSize, type: "number" },
-        contentHash: { value: contentHash, type: "string" },
-      },
-      "registerUpload"
-    );
-
-    const response = await this.request(
-      "POST",
-      "/v1/vault-sdk/register-upload",
-      {
-        vaultId,
-        fileName,
-        filebaseKey,
-        fileSize,
-        contentHash,
-        folderId,
-      },
-      { operation: "registerUpload" }
-    );
-    return response.data;
-  }
 }
 
 export default Vault;

@@ -30,104 +30,46 @@ All configuration parameters except `VAULT_WS_URL` are required. The SDK will th
 
 #### `uploadFile(file, vaultId, parentId?)`
 
-Upload a single file to the vault.
+Upload a file to the vault. Hand over the file and nothing else — the SDK reads the bytes, sanitizes the name, resolves the MIME type, hashes the content, gets a presigned storage URL, uploads, and registers the file, all in this one call.
 
 ```javascript
-import fs from "fs";
-
-const result = await vault.uploadFile(
-  {
-    buffer: fs.readFileSync("./photo.jpg"),
-    name: "photo.jpg",
-    type: "image/jpeg", // optional, defaults to "application/octet-stream"
-  },
-  "your-vault-id"
-);
+// Straight from disk — name and type come from the file itself
+const result = await vault.uploadFile("./photo.jpg", "your-vault-id");
 
 // Upload into a specific folder
 const inFolder = await vault.uploadFile(
-  { buffer: fileBuffer, name: "report.pdf", type: "application/pdf" },
+  "./report.pdf",
   "your-vault-id",
   "parent-folder-id"
 );
 ```
 
+`file` can be any of:
+
+| Form | Example |
+| --- | --- |
+| Path on disk | `"./photo.jpg"` |
+| Bytes + name | `{ buffer: fileBuffer, name: "report.pdf" }` |
+| Path in an object | `{ path: "./photo.jpg" }` |
+| `File` / `Blob` | `new File([bytes], "photo.jpg", { type: "image/jpeg" })` |
+
+`type` (or `mimeType` / `contentType`) is optional — it's derived from the file extension when omitted. Names are sanitized to ASCII before upload, so `héllo wörld🤣.PNG` is stored as `hello world.PNG`.
+
+The call throws a `VaultError` if the file can't be read, is empty, exceeds the 10 GB limit, or if any upload step fails — the `code` tells you which step (`FILE_READ_FAILED`, `INVALID_PARAMETER`, `FILE_TOO_LARGE`, `PRESIGN_FAILED`, `STORAGE_UPLOAD_FAILED`, `REGISTER_FAILED`).
+
 #### `uploadFiles(files, vaultId, parentId?)`
 
-Upload multiple files in parallel. Each file is handled independently — one failure won't block the others.
+Upload multiple files in parallel. Each file is handled independently — one failure won't block the others. Every entry accepts the same forms as `uploadFile()`.
 
 ```javascript
 const results = await vault.uploadFiles(
-  [
-    { buffer: buf1, name: "file1.pdf", type: "application/pdf" },
-    { buffer: buf2, name: "file2.jpg", type: "image/jpeg" },
-  ],
+  ["./file1.pdf", { buffer: buf2, name: "file2.jpg" }],
   "your-vault-id"
 );
 
 // Each result has a status:
 // { status: "success", fileName: "file1.pdf", ... }
 // { status: "failed", fileName: "file2.jpg", error: "...", code: "..." }
-```
-
-### Manual File Upload
-
-`uploadFile()` runs the whole flow for you. Do it manually when you need progress reporting, streaming, or custom handling of very large files.
-
-#### Step 1: `getPresignedUrl({ vaultId, fileName, fileType, fileSize, contentHash, folderId })`
-
-Get an upload URL. `contentHash` must be a 64-character hex SHA-256 of the exact bytes you're going to upload.
-
-```javascript
-import crypto from "crypto";
-import fs from "fs";
-
-const fileBuffer = fs.readFileSync("./large-video.mp4");
-const fileSize = fileBuffer.length;
-const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
-
-const presign = await vault.getPresignedUrl({
-  vaultId: "your-vault-id",
-  fileName: "large-video.mp4",
-  fileType: "video/mp4",
-  fileSize,
-  contentHash,
-  folderId: null, // or a folder ID
-});
-
-const { url, key, contentType, metadata } = presign.data;
-```
-
-#### Step 2: Upload to storage
-
-The URL is valid for one hour and is signed together with its metadata. Send back exactly the `metadata` object you were given, prefixed with `x-amz-meta-` — adding, dropping, or renaming a key invalidates the signature and the upload fails with a 403.
-
-```javascript
-import axios from "axios";
-
-await axios.put(url, fileBuffer, {
-  headers: {
-    "Content-Type": contentType,
-    ...Object.fromEntries(
-      Object.entries(metadata).map(([k, v]) => [`x-amz-meta-${k}`, v])
-    ),
-  },
-});
-```
-
-#### Step 3: `registerUpload({ vaultId, fileName, filebaseKey, fileSize, contentHash, folderId })`
-
-Confirm the upload with the backend. A file uploaded in step 2 but never registered here won't appear in the vault.
-
-```javascript
-const registered = await vault.registerUpload({
-  vaultId: "your-vault-id",
-  fileName: "large-video.mp4",
-  filebaseKey: key, // the `key` from step 1
-  fileSize,
-  contentHash,
-  folderId: null,
-});
 ```
 
 ### File Retrieval
