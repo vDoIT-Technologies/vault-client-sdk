@@ -203,7 +203,7 @@ Get active subscriptions.
 const subs = await vault.getSubscriptions("your-vault-id");
 ```
 
-### Platform Operations
+### Vault Operations
 
 #### `createVault(email, platformId?)`
 
@@ -221,24 +221,6 @@ Import an existing vault. When `platformId` is omitted, SDK access is enabled an
 ```javascript
 const result = await vault.importVault("vault-id", "platform-id");
 const resultWithoutPlatform = await vault.importVault("vault-id");
-```
-
-### WebSocket
-
-#### `connectToWebsocket()`
-
-Establish a real-time WebSocket connection. Requires `VAULT_WS_URL` in the constructor.
-
-```javascript
-await vault.connectToWebsocket();
-
-vault.on("message", (data) => {
-  console.log("Received:", data);
-});
-
-vault.on("stream_error", (error) => {
-  console.error("WebSocket error:", error);
-});
 ```
 
 ## Error Handling
