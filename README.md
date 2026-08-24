@@ -167,6 +167,14 @@ const bot = await vault.createBot("your-vault-id", {
 | `description` | No | Bot personality / description |
 | `profession` | No | Profession label for the bot |
 
+#### `addDriveFileToBot(vaultId, botId, fileId)`
+
+Attach an existing storage file to a bot without re-uploading it.
+
+```javascript
+await vault.addDriveFileToBot("your-vault-id", "bot-id", "file-id");
+```
+
 #### `uploadFilesToBot(files, vaultId, botId)`
 
 Upload one or more files directly to a bot and start ingestion.

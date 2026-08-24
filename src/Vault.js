@@ -1014,6 +1014,41 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Attach an existing storage file to a bot without re-uploading it.
+   *
+   * The file stays in storage and is linked into the bot's knowledge set.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The target bot ID
+   * @param {string} fileId - Existing storage file ID
+   * @returns {Promise<Object>} Link result from the bot endpoint
+   *
+   * @example
+   * await vault.addDriveFileToBot("your-vault-id", "bot-id", "file-id");
+   */
+  async addDriveFileToBot(vaultId, botId, fileId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        fileId: { value: fileId, type: "string" },
+      },
+      "addDriveFileToBot"
+    );
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/add-drive-file`,
+      {
+        vaultId,
+        fileId,
+      },
+      { operation: "addDriveFileToBot" }
+    );
+    return response.data;
+  }
+
+  /**
    * Upload one or more files directly to a bot for ingestion.
    *
    * This stores the files in the bot's dedicated folder and starts bot
