@@ -167,6 +167,20 @@ const bot = await vault.createBot("your-vault-id", {
 | `description` | No | Bot personality / description |
 | `profession` | No | Profession label for the bot |
 
+#### `uploadFilesToBot(files, vaultId, botId)`
+
+Upload one or more files directly to a bot and start ingestion.
+
+```javascript
+await vault.uploadFilesToBot("./faq.pdf", "your-vault-id", "bot-id");
+
+await vault.uploadFilesToBot(
+  ["./faq.pdf", { buffer: audioBuffer, name: "call.mp3" }],
+  "your-vault-id",
+  "bot-id"
+);
+```
+
 ### Storage & Plans
 
 #### `getStorageDetails(vaultId)`

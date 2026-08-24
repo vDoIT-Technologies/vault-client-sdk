@@ -1014,6 +1014,74 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Upload one or more files directly to a bot for ingestion.
+   *
+   * This stores the files in the bot's dedicated folder and starts bot
+   * knowledge processing in the background.
+   *
+   * @param {string|Object|Blob|Array<string|Object|Blob>} files
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The target bot ID
+   * @returns {Promise<Object>} Upload result from the bot ingestion endpoint
+   *
+   * @example
+   * await vault.uploadFilesToBot("./faq.pdf", "your-vault-id", "bot-id");
+   * await vault.uploadFilesToBot(
+   *   ["./faq.pdf", { buffer: audioBuffer, name: "call.mp3" }],
+   *   "your-vault-id",
+   *   "bot-id"
+   * );
+   */
+  async uploadFilesToBot(files, vaultId, botId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+      },
+      "uploadFilesToBot"
+    );
+
+    const normalizedFiles = Array.isArray(files) ? files : [files];
+    if (!normalizedFiles.length) {
+      throw new VaultError(
+        "[Vault SDK] 'uploadFilesToBot': At least one file is required.",
+        { code: "INVALID_PARAMETER", operation: "uploadFilesToBot" }
+      );
+    }
+
+    if (typeof FormData === "undefined" || typeof Blob === "undefined") {
+      throw new VaultError(
+        "[Vault SDK] 'uploadFilesToBot': FormData and Blob support are required in this runtime.",
+        { code: "UNSUPPORTED_RUNTIME", operation: "uploadFilesToBot" }
+      );
+    }
+
+    const formData = new FormData();
+    formData.append("vaultId", vaultId);
+
+    for (const file of normalizedFiles) {
+      const resolved = await resolveFile(file, "uploadFilesToBot");
+      const blob = new Blob([resolved.buffer], {
+        type: resolved.type || contentTypeFor(resolved.name),
+      });
+      formData.append("files", blob, resolved.name);
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/files?vaultId=${encodeURIComponent(vaultId)}`,
+      formData,
+      {
+        operation: "uploadFilesToBot",
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      }
+    );
+    return response.data;
+  }
+
+  /**
    * Alias for renameItem() — kept for backward compatibility.
    * @param {string} vaultId
    * @param {string} itemId
