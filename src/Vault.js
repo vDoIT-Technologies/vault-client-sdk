@@ -950,6 +950,70 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Create a bot for the given vault.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {Object} bot
+   * @param {string} bot.name - Bot display name
+   * @param {string} [bot.description] - Optional bot personality/description
+   * @param {string} [bot.profession] - Optional profession label
+   * @returns {Promise<Object>} Created bot details, including its dedicated folder
+   *
+   * @example
+   * const bot = await vault.createBot("your-vault-id", {
+   *   name: "Support Bot",
+   *   description: "Answers customer questions clearly",
+   *   profession: "Customer Support",
+   * });
+   */
+  async createBot(vaultId, bot) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        bot: { value: bot, type: "object" },
+        name: {
+          value: bot?.name,
+          type: "string",
+          message:
+            "[Vault SDK] 'createBot' requires bot.name to be a non-empty string.",
+        },
+        description: {
+          value: bot?.description,
+          type: "string",
+          required: false,
+        },
+        profession: {
+          value: bot?.profession,
+          type: "string",
+          required: false,
+        },
+      },
+      "createBot"
+    );
+
+    const payload = {
+      vaultId,
+      name: bot.name.trim(),
+    };
+
+    if (typeof bot.description === "string" && bot.description.trim()) {
+      payload.description = bot.description.trim();
+    }
+
+    if (typeof bot.profession === "string" && bot.profession.trim()) {
+      payload.profession = bot.profession.trim();
+    }
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/bots",
+      payload,
+      { operation: "createBot" }
+    );
+    return response.data;
+  }
+
+  /**
    * Alias for renameItem() — kept for backward compatibility.
    * @param {string} vaultId
    * @param {string} itemId

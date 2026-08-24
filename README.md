@@ -145,6 +145,28 @@ Delete a folder.
 await vault.deleteFolder("your-vault-id", "folder-id");
 ```
 
+### Bot Operations
+
+#### `createBot(vaultId, bot)`
+
+Create a bot for the vault. This uses the Vault SDK auth flow and creates the bot's dedicated folder automatically.
+
+```javascript
+const bot = await vault.createBot("your-vault-id", {
+  name: "Support Bot",
+  description: "Answers customer questions clearly",
+  profession: "Customer Support",
+});
+```
+
+`bot` accepts:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | Yes | Bot display name |
+| `description` | No | Bot personality / description |
+| `profession` | No | Profession label for the bot |
+
 ### Storage & Plans
 
 #### `getStorageDetails(vaultId)`
