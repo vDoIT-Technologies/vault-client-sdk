@@ -155,6 +155,37 @@ class Vault extends EventEmitter {
       .digest("hex");
   }
 
+  /**
+   * Internal: For bulk-style SDK operations, surface a real SDK error when the
+   * server processed the request but every requested item failed.
+   *
+   * @private
+   */
+  assertNotAllItemsFailed(responseData, operation, itemLabel) {
+    const bulkData = responseData?.data;
+    const results = Array.isArray(bulkData?.results) ? bulkData.results : null;
+    const successCount = Number(bulkData?.successCount ?? 0);
+    const failureCount = Number(bulkData?.failureCount ?? 0);
+
+    if (!results || results.length === 0) {
+      return;
+    }
+
+    if (successCount > 0 || failureCount !== results.length) {
+      return;
+    }
+
+    const message =
+      responseData?.message ||
+      `All requested ${itemLabel} failed to be added to the bot`;
+
+    throw new VaultError(`[Vault SDK] ${operation}: ${message}`, {
+      code: "BAD_REQUEST",
+      operation,
+      data: responseData,
+    });
+  }
+
   // ─── WebSocket ────────────────────────────────────────────────
 
   /**
@@ -1020,30 +1051,98 @@ class Vault extends EventEmitter {
    *
    * @param {string} vaultId - The vault ID that owns the bot
    * @param {string} botId - The target bot ID
-   * @param {string} fileId - Existing storage file ID
-   * @returns {Promise<Object>} Link result from the bot endpoint
+   * @param {string|string[]} fileIds - One file ID or multiple file IDs
+   * @returns {Promise<Object>} Bulk link result from the bot endpoint
    *
    * @example
-   * await vault.addDriveFileToBot("your-vault-id", "bot-id", "file-id");
+   * await vault.addDriveFilesToBot("your-vault-id", "bot-id", "file-id");
+   * await vault.addDriveFilesToBot("your-vault-id", "bot-id", ["file-a", "file-b"]);
    */
-  async addDriveFileToBot(vaultId, botId, fileId) {
+  async addDriveFilesToBot(vaultId, botId, fileIds) {
     validator.validate(
       {
         vaultId: { value: vaultId, type: "string" },
         botId: { value: botId, type: "string" },
-        fileId: { value: fileId, type: "string" },
       },
-      "addDriveFileToBot"
+      "addDriveFilesToBot"
     );
+
+    const normalizedFileIds = Array.isArray(fileIds)
+      ? [...new Set(fileIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+      : typeof fileIds === "string" && fileIds.trim()
+        ? [fileIds.trim()]
+        : [];
+
+    if (!normalizedFileIds.length) {
+      throw new VaultError(
+        "[Vault SDK] 'addDriveFilesToBot': At least one file ID is required.",
+        { code: "INVALID_PARAMETER", operation: "addDriveFilesToBot" }
+      );
+    }
 
     const response = await this.request(
       "POST",
-      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/add-drive-file`,
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/add-drive-files`,
       {
         vaultId,
-        fileId,
+        fileIds: normalizedFileIds,
       },
-      { operation: "addDriveFileToBot" }
+      { operation: "addDriveFilesToBot" }
+    );
+    this.assertNotAllItemsFailed(response.data, "addDriveFilesToBot", "files");
+    return response.data;
+  }
+
+  /**
+   * Attach one or more existing storage folders to a bot without moving them.
+   *
+   * You can pass a single folder ID or an array of folder IDs. The SDK
+   * normalizes the input and uses the bulk folder-link route.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The target bot ID
+   * @param {string|string[]} folderIds - One folder ID or multiple folder IDs
+   * @returns {Promise<Object>} Bulk link result from the bot endpoint
+   *
+   * @example
+   * await vault.addDriveFoldersToBot("your-vault-id", "bot-id", "folder-id");
+   * await vault.addDriveFoldersToBot("your-vault-id", "bot-id", ["folder-a", "folder-b"]);
+   */
+  async addDriveFoldersToBot(vaultId, botId, folderIds) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+      },
+      "addDriveFoldersToBot"
+    );
+
+    const normalizedFolderIds = Array.isArray(folderIds)
+      ? [...new Set(folderIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+      : typeof folderIds === "string" && folderIds.trim()
+        ? [folderIds.trim()]
+        : [];
+
+    if (!normalizedFolderIds.length) {
+      throw new VaultError(
+        "[Vault SDK] 'addDriveFoldersToBot': At least one folder ID is required.",
+        { code: "INVALID_PARAMETER", operation: "addDriveFoldersToBot" }
+      );
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/add-drive-folders`,
+      {
+        vaultId,
+        folderIds: normalizedFolderIds,
+      },
+      { operation: "addDriveFoldersToBot" }
+    );
+    this.assertNotAllItemsFailed(
+      response.data,
+      "addDriveFoldersToBot",
+      "folders"
     );
     return response.data;
   }

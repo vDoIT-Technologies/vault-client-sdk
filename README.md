@@ -167,12 +167,34 @@ const bot = await vault.createBot("your-vault-id", {
 | `description` | No | Bot personality / description |
 | `profession` | No | Profession label for the bot |
 
-#### `addDriveFileToBot(vaultId, botId, fileId)`
+#### `addDriveFilesToBot(vaultId, botId, fileIds)`
 
-Attach an existing storage file to a bot without re-uploading it.
+Attach one or more existing storage files to a bot without re-uploading them. Accepts either a
+single file ID string or an array of file IDs.
 
 ```javascript
-await vault.addDriveFileToBot("your-vault-id", "bot-id", "file-id");
+await vault.addDriveFilesToBot("your-vault-id", "bot-id", "file-id");
+
+await vault.addDriveFilesToBot(
+  "your-vault-id",
+  "bot-id",
+  ["file-a", "file-b"]
+);
+```
+
+#### `addDriveFoldersToBot(vaultId, botId, folderIds)`
+
+Attach one or more existing storage folders to a bot without moving them. Accepts either a
+single folder ID string or an array of folder IDs.
+
+```javascript
+await vault.addDriveFoldersToBot("your-vault-id", "bot-id", "folder-id");
+
+await vault.addDriveFoldersToBot(
+  "your-vault-id",
+  "bot-id",
+  ["folder-a", "folder-b"]
+);
 ```
 
 #### `uploadFilesToBot(files, vaultId, botId)`
