@@ -63,6 +63,7 @@ class Vault extends EventEmitter {
     this.baseUrl = VAULT_BASE_URL;
     this.wsUrl = VAULT_WS_URL;
     this.ws = null;
+    this.botChatWs = null;
 
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
@@ -155,6 +156,37 @@ class Vault extends EventEmitter {
       .digest("hex");
   }
 
+  /**
+   * Internal: For bulk-style SDK operations, surface a real SDK error when the
+   * server processed the request but every requested item failed.
+   *
+   * @private
+   */
+  assertNotAllItemsFailed(responseData, operation, itemLabel) {
+    const bulkData = responseData?.data;
+    const results = Array.isArray(bulkData?.results) ? bulkData.results : null;
+    const successCount = Number(bulkData?.successCount ?? 0);
+    const failureCount = Number(bulkData?.failureCount ?? 0);
+
+    if (!results || results.length === 0) {
+      return;
+    }
+
+    if (successCount > 0 || failureCount !== results.length) {
+      return;
+    }
+
+    const message =
+      responseData?.message ||
+      `All requested ${itemLabel} failed to be added to the bot`;
+
+    throw new VaultError(`[Vault SDK] ${operation}: ${message}`, {
+      code: "BAD_REQUEST",
+      operation,
+      data: responseData,
+    });
+  }
+
   // ─── WebSocket ────────────────────────────────────────────────
 
   /**
@@ -227,6 +259,427 @@ class Vault extends EventEmitter {
   wsOnError(error) {
     this.emit("stream_error", error.message);
     return error;
+  }
+
+  /**
+   * Internal: Resolve the payload body from the standard API response wrapper.
+   * @private
+   */
+  getResponseData(responseData) {
+    if (responseData && typeof responseData === "object" && "data" in responseData) {
+      return responseData.data;
+    }
+    return responseData;
+  }
+
+  /**
+   * Internal: Normalize a user-provided base URL into an absolute URL object.
+   * Accepts http(s), ws(s), protocol-relative, root-relative, and bare host forms.
+   * @private
+   */
+  normalizeAbsoluteUrl(rawUrl, fallbackProtocol = "http:") {
+    const value = typeof rawUrl === "string" ? rawUrl.trim() : "";
+    if (!value) {
+      throw new VaultError(
+        "[Vault SDK] Invalid URL configuration. Expected an absolute base URL.",
+        { code: "INVALID_PARAMETER", operation: "normalizeAbsoluteUrl" }
+      );
+    }
+
+    if (/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(value)) {
+      return new URL(value);
+    }
+
+    if (value.startsWith("//")) {
+      return new URL(`${fallbackProtocol}${value}`);
+    }
+
+    if (value.startsWith("/")) {
+      if (typeof window !== "undefined" && window.location?.origin) {
+        return new URL(value, window.location.origin);
+      }
+
+      throw new VaultError(
+        `[Vault SDK] Cannot resolve relative URL "${value}" without a browser origin.`,
+        { code: "INVALID_PARAMETER", operation: "normalizeAbsoluteUrl" }
+      );
+    }
+
+    return new URL(`${fallbackProtocol}//${value}`);
+  }
+
+  /**
+   * Internal: Build the bot chat WebSocket URL.
+   * @private
+   */
+  getBotChatWebSocketUrl(token, overrideUrl) {
+    validator.validate(
+      {
+        token: { value: token, type: "string" },
+      },
+      "getBotChatWebSocketUrl"
+    );
+
+    const base = overrideUrl || this.wsUrl || this.baseUrl;
+    if (!base) {
+      throw new VaultError(
+        "[Vault SDK] 'connectToBotChat': VAULT_BASE_URL or VAULT_WS_URL is required to build the bot chat WebSocket URL.",
+        { code: "MISSING_CONFIG", operation: "connectToBotChat" }
+      );
+    }
+
+    const normalizedBase = this.normalizeAbsoluteUrl(
+      base,
+      typeof base === "string" && base.trim().startsWith("ws") ? "ws:" : "http:"
+    );
+
+    const url = new URL(normalizedBase.toString());
+    const path = url.pathname.replace(/\/+$/, "");
+
+    if (path !== "/ws/chat") {
+      url.pathname = "/ws/chat";
+    }
+
+    if (url.protocol === "https:") {
+      url.protocol = "wss:";
+    } else if (url.protocol === "http:") {
+      url.protocol = "ws:";
+    } else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+      url.protocol = "ws:";
+    }
+
+    url.searchParams.set("token", token);
+    return url.toString();
+  }
+
+  /**
+   * Create a short-lived launch token that can be redeemed into a vault JWT.
+   *
+   * @param {string} vaultId - The vault ID to create the token for
+   * @param {Object} [options] - Optional launch context
+   * @returns {Promise<Object>} Standard API response containing launchToken and launchUrl
+   */
+  async createVaultLaunchToken(vaultId, options = {}) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        options: { value: options, type: "object", required: false },
+      },
+      "createVaultLaunchToken"
+    );
+
+    const payload = { vaultId };
+    for (const key of ["returnTo", "clientId", "adminId", "sourceUserId"]) {
+      if (typeof options[key] === "string" && options[key].trim()) {
+        payload[key] = options[key].trim();
+      }
+    }
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/launch-token",
+      payload,
+      { operation: "createVaultLaunchToken" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Redeem a launch token into a normal vault access token.
+   *
+   * @param {string} launchToken - One-time launch token from createVaultLaunchToken()
+   * @returns {Promise<Object>} Standard API response containing user.accessToken
+   */
+  async redeemVaultLaunchToken(launchToken) {
+    validator.validate(
+      {
+        launchToken: { value: launchToken, type: "string" },
+      },
+      "redeemVaultLaunchToken"
+    );
+
+    const response = await this.request(
+      "POST",
+      "/v1/auth/launch/redeem",
+      { token: launchToken.trim() },
+      { operation: "redeemVaultLaunchToken" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Create and redeem a launch token into the JWT required by the bot chat socket.
+   *
+   * @param {string} vaultId - The vault ID to authenticate for chat
+   * @param {Object} [options] - Optional launch context
+   * @returns {Promise<string>} Vault access token for bot chat
+   */
+  async createBotChatAccessToken(vaultId, options = {}) {
+    const launchResponse = await this.createVaultLaunchToken(vaultId, options);
+    const launchData = this.getResponseData(launchResponse);
+    const launchToken = launchData?.launchToken;
+
+    if (!launchToken) {
+      throw new VaultError(
+        "[Vault SDK] 'createBotChatAccessToken': Launch token was not returned by the server.",
+        { code: "BAD_RESPONSE", operation: "createBotChatAccessToken", data: launchResponse }
+      );
+    }
+
+    const redeemResponse = await this.redeemVaultLaunchToken(launchToken);
+    const redeemData = this.getResponseData(redeemResponse);
+    const accessToken = redeemData?.user?.accessToken;
+
+    if (!accessToken) {
+      throw new VaultError(
+        "[Vault SDK] 'createBotChatAccessToken': Access token was not returned by the server.",
+        { code: "BAD_RESPONSE", operation: "createBotChatAccessToken", data: redeemResponse }
+      );
+    }
+
+    return accessToken;
+  }
+
+  /**
+   * Open a WebSocket connection to the live bot chat service.
+   *
+   * If `token` is omitted, the SDK will mint one from the vault SDK auth flow.
+   * Pass `botId` to automatically join a bot chat once the socket opens.
+   *
+   * @param {string} vaultId - The vault ID to authenticate for chat
+   * @param {Object} [options]
+   * @param {string} [options.token] - Existing vault access token
+   * @param {string} [options.launchToken] - Existing launch token to redeem
+   * @param {string} [options.botId] - Bot ID to auto-join after connect
+   * @param {string} [options.sessionId] - Existing chat session ID to resume
+   * @param {string} [options.wsUrl] - Optional explicit WebSocket base URL
+   * @returns {Promise<Object>} Connection metadata
+   */
+  async connectToBotChat(vaultId, options = {}) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        options: { value: options, type: "object", required: false },
+      },
+      "connectToBotChat"
+    );
+
+    const {
+      token,
+      launchToken,
+      botId,
+      sessionId,
+      wsUrl,
+      ...launchOptions
+    } = options;
+
+    let accessToken = typeof token === "string" && token.trim() ? token.trim() : null;
+
+    if (!accessToken && typeof launchToken === "string" && launchToken.trim()) {
+      const redeemResponse = await this.redeemVaultLaunchToken(launchToken.trim());
+      const redeemData = this.getResponseData(redeemResponse);
+      accessToken = redeemData?.user?.accessToken || null;
+    }
+
+    if (!accessToken) {
+      accessToken = await this.createBotChatAccessToken(vaultId, launchOptions);
+    }
+
+    if (this.botChatWs && this.botChatWs.readyState < WebSocket.CLOSING) {
+      this.botChatWs.close();
+    }
+
+    const socketUrl = this.getBotChatWebSocketUrl(accessToken, wsUrl);
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const socket = new WebSocket(socketUrl);
+      this.botChatWs = socket;
+
+      socket.onopen = () => {
+        this.emit("bot_chat_open");
+
+        if (botId) {
+          this.joinBotChat(botId, sessionId);
+        }
+
+        settled = true;
+        resolve({
+          token: accessToken,
+          url: socketUrl,
+          botId: botId || null,
+          sessionId: sessionId || null,
+        });
+      };
+
+      socket.onmessage = this.botChatOnMessage.bind(this);
+
+      socket.onclose = (event) => {
+        if (this.botChatWs === socket) {
+          this.botChatWs = null;
+        }
+
+        this.emit("bot_chat_close", event);
+
+        if (!settled) {
+          reject(
+            new VaultError(
+              "[Vault SDK] 'connectToBotChat': Bot chat socket closed before the connection was established.",
+              { code: "WEBSOCKET_CLOSED", operation: "connectToBotChat" }
+            )
+          );
+        }
+      };
+
+      socket.onerror = (error) => {
+        const wrapped = new VaultError(
+          `[Vault SDK] 'connectToBotChat': WebSocket connection failed — ${error.message || "Unknown error"}`,
+          { code: "WEBSOCKET_ERROR", operation: "connectToBotChat" }
+        );
+
+        this.emit("bot_chat_stream_error", wrapped);
+
+        if (!settled) {
+          settled = true;
+          reject(wrapped);
+        }
+      };
+    });
+  }
+
+  /**
+   * Internal: Parse and emit bot chat messages.
+   * @private
+   */
+  botChatOnMessage(event) {
+    try {
+      const response = JSON.parse(event.data);
+      this.emit("bot_chat_message", response);
+
+      if (response?.type) {
+        this.emit(`bot_chat_${response.type}`, response.payload);
+      }
+
+      return response;
+    } catch (error) {
+      this.emit(
+        "bot_chat_stream_error",
+        new VaultError(
+          `[Vault SDK] Failed to parse bot chat WebSocket message: ${error.message}`,
+          { code: "BAD_RESPONSE", operation: "botChatOnMessage" }
+        )
+      );
+    }
+  }
+
+  /**
+   * Internal: Send an event through the bot chat socket.
+   * @private
+   */
+  sendBotChatEvent(type, payload = {}) {
+    if (!this.botChatWs || this.botChatWs.readyState !== WebSocket.OPEN) {
+      throw new VaultError(
+        `[Vault SDK] '${type}': Bot chat socket is not connected.`,
+        { code: "WEBSOCKET_NOT_CONNECTED", operation: type }
+      );
+    }
+
+    this.botChatWs.send(JSON.stringify({ type, payload }));
+  }
+
+  /**
+   * Join a bot's live chat stream.
+   *
+   * @param {string} botId - Target bot ID
+   * @param {string} [sessionId] - Optional existing session to resume
+   */
+  joinBotChat(botId, sessionId = null) {
+    validator.validate(
+      {
+        botId: { value: botId, type: "string" },
+        sessionId: { value: sessionId, type: "string", required: false },
+      },
+      "joinBotChat"
+    );
+
+    const payload = { botId: botId.trim() };
+    if (typeof sessionId === "string" && sessionId.trim()) {
+      payload.sessionId = sessionId.trim();
+    }
+
+    this.sendBotChatEvent("join_chat", payload);
+  }
+
+  /**
+   * Send a chat message to the currently joined bot.
+   *
+   * @param {string} message - User message content
+   * @param {Array<{role: string, content: string}>} [history] - Optional recent message history
+   */
+  sendBotChatMessage(message, history = []) {
+    validator.validate(
+      {
+        message: { value: message, type: "string" },
+      },
+      "sendBotChatMessage"
+    );
+
+    if (!Array.isArray(history)) {
+      throw new VaultError(
+        "[Vault SDK] 'sendBotChatMessage': history must be an array when provided.",
+        { code: "INVALID_PARAMETER", operation: "sendBotChatMessage" }
+      );
+    }
+
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) {
+      throw new VaultError(
+        "[Vault SDK] 'sendBotChatMessage': Message cannot be empty.",
+        { code: "INVALID_PARAMETER", operation: "sendBotChatMessage" }
+      );
+    }
+
+    const normalizedHistory = Array.isArray(history)
+      ? history
+          .filter(
+            (entry) =>
+              entry &&
+              (entry.role === "user" || entry.role === "assistant") &&
+              typeof entry.content === "string" &&
+              entry.content.trim()
+          )
+          .map((entry) => ({
+            role: entry.role,
+            content: entry.content.trim(),
+          }))
+      : [];
+
+    this.sendBotChatEvent("send_message", {
+      message: trimmedMessage,
+      history: normalizedHistory,
+    });
+  }
+
+  /**
+   * Broadcast a typing indicator to the user's other active chat tabs.
+   */
+  sendBotChatTyping() {
+    this.sendBotChatEvent("typing", { isTyping: true });
+  }
+
+  /**
+   * Close the bot chat socket if it is open.
+   *
+   * @param {number} [code=1000] - WebSocket close code
+   * @param {string} [reason="Bot chat closed by client"] - Close reason
+   */
+  disconnectBotChat(code = 1000, reason = "Bot chat closed by client") {
+    if (!this.botChatWs) {
+      return;
+    }
+
+    this.botChatWs.close(code, reason);
+    this.botChatWs = null;
   }
 
   // ─── File Upload ──────────────────────────────────────────────
@@ -945,6 +1398,275 @@ class Vault extends EventEmitter {
       "/v1/vault-sdk/import-vault",
       payload,
       { operation: "importVault" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Create a bot for the given vault.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {Object} bot
+   * @param {string} bot.name - Bot display name
+   * @param {string} [bot.description] - Optional bot personality/description
+   * @param {string} [bot.profession] - Optional profession label
+   * @returns {Promise<Object>} Created bot details, including its dedicated folder
+   *
+   * @example
+   * const bot = await vault.createBot("your-vault-id", {
+   *   name: "Support Bot",
+   *   description: "Answers customer questions clearly",
+   *   profession: "Customer Support",
+   * });
+   */
+  async createBot(vaultId, bot) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        bot: { value: bot, type: "object" },
+        name: {
+          value: bot?.name,
+          type: "string",
+          message:
+            "[Vault SDK] 'createBot' requires bot.name to be a non-empty string.",
+        },
+        description: {
+          value: bot?.description,
+          type: "string",
+          required: false,
+        },
+        profession: {
+          value: bot?.profession,
+          type: "string",
+          required: false,
+        },
+      },
+      "createBot"
+    );
+
+    const payload = {
+      vaultId,
+      name: bot.name.trim(),
+    };
+
+    if (typeof bot.description === "string" && bot.description.trim()) {
+      payload.description = bot.description.trim();
+    }
+
+    if (typeof bot.profession === "string" && bot.profession.trim()) {
+      payload.profession = bot.profession.trim();
+    }
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/bots",
+      payload,
+      { operation: "createBot" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Fetch one bot's full details, or all bots with their associated files and folders.
+   *
+   * When `botId` is omitted, the SDK returns the detailed view for every bot
+   * owned by the vault user.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot(s)
+   * @param {string} [botId] - Optional bot ID
+   * @returns {Promise<Object|Object[]>} One detailed bot or an array of detailed bots
+   *
+   * @example
+   * const oneBot = await vault.getBotDetails("your-vault-id", "bot-id");
+   * const allBots = await vault.getBotDetails("your-vault-id");
+   */
+  async getBotDetails(vaultId, botId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string", required: false },
+      },
+      "getBotDetails"
+    );
+
+    const encodedVaultId = encodeURIComponent(vaultId);
+    const endpoint = botId
+      ? `/v1/vault-sdk/bots/${encodeURIComponent(botId)}?vaultId=${encodedVaultId}`
+      : `/v1/vault-sdk/bots?vaultId=${encodedVaultId}`;
+
+    const response = await this.request("GET", endpoint, undefined, {
+      operation: "getBotDetails",
+    });
+    return response.data;
+  }
+
+  /**
+   * Attach an existing storage file to a bot without re-uploading it.
+   *
+   * The file stays in storage and is linked into the bot's knowledge set.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The target bot ID
+   * @param {string|string[]} fileIds - One file ID or multiple file IDs
+   * @returns {Promise<Object>} Bulk link result from the bot endpoint
+   *
+   * @example
+   * await vault.addDriveFilesToBot("your-vault-id", "bot-id", "file-id");
+   * await vault.addDriveFilesToBot("your-vault-id", "bot-id", ["file-a", "file-b"]);
+   */
+  async addDriveFilesToBot(vaultId, botId, fileIds) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+      },
+      "addDriveFilesToBot"
+    );
+
+    const normalizedFileIds = Array.isArray(fileIds)
+      ? [...new Set(fileIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+      : typeof fileIds === "string" && fileIds.trim()
+        ? [fileIds.trim()]
+        : [];
+
+    if (!normalizedFileIds.length) {
+      throw new VaultError(
+        "[Vault SDK] 'addDriveFilesToBot': At least one file ID is required.",
+        { code: "INVALID_PARAMETER", operation: "addDriveFilesToBot" }
+      );
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/add-drive-files`,
+      {
+        vaultId,
+        fileIds: normalizedFileIds,
+      },
+      { operation: "addDriveFilesToBot" }
+    );
+    this.assertNotAllItemsFailed(response.data, "addDriveFilesToBot", "files");
+    return response.data;
+  }
+
+  /**
+   * Attach one or more existing storage folders to a bot without moving them.
+   *
+   * You can pass a single folder ID or an array of folder IDs. The SDK
+   * normalizes the input and uses the bulk folder-link route.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The target bot ID
+   * @param {string|string[]} folderIds - One folder ID or multiple folder IDs
+   * @returns {Promise<Object>} Bulk link result from the bot endpoint
+   *
+   * @example
+   * await vault.addDriveFoldersToBot("your-vault-id", "bot-id", "folder-id");
+   * await vault.addDriveFoldersToBot("your-vault-id", "bot-id", ["folder-a", "folder-b"]);
+   */
+  async addDriveFoldersToBot(vaultId, botId, folderIds) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+      },
+      "addDriveFoldersToBot"
+    );
+
+    const normalizedFolderIds = Array.isArray(folderIds)
+      ? [...new Set(folderIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+      : typeof folderIds === "string" && folderIds.trim()
+        ? [folderIds.trim()]
+        : [];
+
+    if (!normalizedFolderIds.length) {
+      throw new VaultError(
+        "[Vault SDK] 'addDriveFoldersToBot': At least one folder ID is required.",
+        { code: "INVALID_PARAMETER", operation: "addDriveFoldersToBot" }
+      );
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/add-drive-folders`,
+      {
+        vaultId,
+        folderIds: normalizedFolderIds,
+      },
+      { operation: "addDriveFoldersToBot" }
+    );
+    this.assertNotAllItemsFailed(
+      response.data,
+      "addDriveFoldersToBot",
+      "folders"
+    );
+    return response.data;
+  }
+
+  /**
+   * Upload one or more files directly to a bot for ingestion.
+   *
+   * This stores the files in the bot's dedicated folder and starts bot
+   * knowledge processing in the background.
+   *
+   * @param {string|Object|Blob|Array<string|Object|Blob>} files
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The target bot ID
+   * @returns {Promise<Object>} Upload result from the bot ingestion endpoint
+   *
+   * @example
+   * await vault.uploadFilesToBot("./faq.pdf", "your-vault-id", "bot-id");
+   * await vault.uploadFilesToBot(
+   *   ["./faq.pdf", { buffer: audioBuffer, name: "call.mp3" }],
+   *   "your-vault-id",
+   *   "bot-id"
+   * );
+   */
+  async uploadFilesToBot(files, vaultId, botId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+      },
+      "uploadFilesToBot"
+    );
+
+    const normalizedFiles = Array.isArray(files) ? files : [files];
+    if (!normalizedFiles.length) {
+      throw new VaultError(
+        "[Vault SDK] 'uploadFilesToBot': At least one file is required.",
+        { code: "INVALID_PARAMETER", operation: "uploadFilesToBot" }
+      );
+    }
+
+    if (typeof FormData === "undefined" || typeof Blob === "undefined") {
+      throw new VaultError(
+        "[Vault SDK] 'uploadFilesToBot': FormData and Blob support are required in this runtime.",
+        { code: "UNSUPPORTED_RUNTIME", operation: "uploadFilesToBot" }
+      );
+    }
+
+    const formData = new FormData();
+    formData.append("vaultId", vaultId);
+
+    for (const file of normalizedFiles) {
+      const resolved = await resolveFile(file, "uploadFilesToBot");
+      const blob = new Blob([resolved.buffer], {
+        type: resolved.type || contentTypeFor(resolved.name),
+      });
+      formData.append("files", blob, resolved.name);
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/files?vaultId=${encodeURIComponent(vaultId)}`,
+      formData,
+      {
+        operation: "uploadFilesToBot",
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      }
     );
     return response.data;
   }
