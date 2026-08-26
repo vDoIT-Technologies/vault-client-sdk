@@ -167,6 +167,15 @@ const bot = await vault.createBot("your-vault-id", {
 | `description` | No | Bot personality / description |
 | `profession` | No | Profession label for the bot |
 
+#### `getBotDetails(vaultId, botId?)`
+
+Fetch one bot's full details, or all bots with their associated files and folders.
+
+```javascript
+const oneBot = await vault.getBotDetails("your-vault-id", "bot-id");
+const allBots = await vault.getBotDetails("your-vault-id");
+```
+
 #### `addDriveFilesToBot(vaultId, botId, fileIds)`
 
 Attach one or more existing storage files to a bot without re-uploading them. Accepts either a
@@ -210,6 +219,86 @@ await vault.uploadFilesToBot(
   "bot-id"
 );
 ```
+
+#### `createVaultLaunchToken(vaultId, options?)`
+
+Create a short-lived launch token for the vault user linked to your SDK credentials. This is mainly useful when you want to hand the auth off elsewhere.
+
+```javascript
+const launch = await vault.createVaultLaunchToken("your-vault-id");
+const launchToken = launch.data.launchToken;
+```
+
+#### `redeemVaultLaunchToken(launchToken)`
+
+Exchange a launch token for a normal vault access token.
+
+```javascript
+const redeemed = await vault.redeemVaultLaunchToken(launchToken);
+const accessToken = redeemed.data.user.accessToken;
+```
+
+#### `connectToBotChat(vaultId, options?)`
+
+Open the live bot chat WebSocket. If you do not pass `options.token`, the SDK will create and redeem a launch token automatically, then connect the socket for you.
+
+```javascript
+await vault.connectToBotChat("your-vault-id", {
+  botId: "bot-id",
+});
+
+vault.on("bot_chat_chat_history", (payload) => {
+  console.log("history", payload.history);
+});
+
+let streamed = "";
+vault.on("bot_chat_token", ({ token }) => {
+  streamed += token;
+  process.stdout.write(token);
+});
+
+vault.on("bot_chat_message_complete", ({ content, sessionId }) => {
+  console.log("\ncomplete", sessionId, content);
+});
+
+vault.sendBotChatMessage("Hello bot");
+```
+
+You can also pass an existing token:
+
+```javascript
+await vault.connectToBotChat("your-vault-id", {
+  token: "vault-jwt",
+  botId: "bot-id",
+  sessionId: "existing-session-id",
+});
+```
+
+Available helpers:
+
+| Method | Purpose |
+| --- | --- |
+| `joinBotChat(botId, sessionId?)` | Join or resume a bot chat |
+| `sendBotChatMessage(message, history?)` | Send a message to the joined bot |
+| `sendBotChatTyping()` | Emit typing state |
+| `disconnectBotChat()` | Close the bot chat socket |
+
+Useful emitted events:
+
+| Event | Payload |
+| --- | --- |
+| `bot_chat_open` | none |
+| `bot_chat_message` | Raw parsed socket message |
+| `bot_chat_connected` | Server connected payload |
+| `bot_chat_chat_history` | Bot/session/history payload |
+| `bot_chat_session_info` | Session ID payload |
+| `bot_chat_token` | Stream token payload |
+| `bot_chat_message_complete` | Final assistant response payload |
+| `bot_chat_points_update` | Updated points payload |
+| `bot_chat_typing` | Typing payload |
+| `bot_chat_error` | Server-side error payload |
+| `bot_chat_close` | Native close event |
+| `bot_chat_stream_error` | SDK parse/transport error |
 
 ### Storage & Plans
 

@@ -63,6 +63,7 @@ class Vault extends EventEmitter {
     this.baseUrl = VAULT_BASE_URL;
     this.wsUrl = VAULT_WS_URL;
     this.ws = null;
+    this.botChatWs = null;
 
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
@@ -258,6 +259,427 @@ class Vault extends EventEmitter {
   wsOnError(error) {
     this.emit("stream_error", error.message);
     return error;
+  }
+
+  /**
+   * Internal: Resolve the payload body from the standard API response wrapper.
+   * @private
+   */
+  getResponseData(responseData) {
+    if (responseData && typeof responseData === "object" && "data" in responseData) {
+      return responseData.data;
+    }
+    return responseData;
+  }
+
+  /**
+   * Internal: Normalize a user-provided base URL into an absolute URL object.
+   * Accepts http(s), ws(s), protocol-relative, root-relative, and bare host forms.
+   * @private
+   */
+  normalizeAbsoluteUrl(rawUrl, fallbackProtocol = "http:") {
+    const value = typeof rawUrl === "string" ? rawUrl.trim() : "";
+    if (!value) {
+      throw new VaultError(
+        "[Vault SDK] Invalid URL configuration. Expected an absolute base URL.",
+        { code: "INVALID_PARAMETER", operation: "normalizeAbsoluteUrl" }
+      );
+    }
+
+    if (/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(value)) {
+      return new URL(value);
+    }
+
+    if (value.startsWith("//")) {
+      return new URL(`${fallbackProtocol}${value}`);
+    }
+
+    if (value.startsWith("/")) {
+      if (typeof window !== "undefined" && window.location?.origin) {
+        return new URL(value, window.location.origin);
+      }
+
+      throw new VaultError(
+        `[Vault SDK] Cannot resolve relative URL "${value}" without a browser origin.`,
+        { code: "INVALID_PARAMETER", operation: "normalizeAbsoluteUrl" }
+      );
+    }
+
+    return new URL(`${fallbackProtocol}//${value}`);
+  }
+
+  /**
+   * Internal: Build the bot chat WebSocket URL.
+   * @private
+   */
+  getBotChatWebSocketUrl(token, overrideUrl) {
+    validator.validate(
+      {
+        token: { value: token, type: "string" },
+      },
+      "getBotChatWebSocketUrl"
+    );
+
+    const base = overrideUrl || this.wsUrl || this.baseUrl;
+    if (!base) {
+      throw new VaultError(
+        "[Vault SDK] 'connectToBotChat': VAULT_BASE_URL or VAULT_WS_URL is required to build the bot chat WebSocket URL.",
+        { code: "MISSING_CONFIG", operation: "connectToBotChat" }
+      );
+    }
+
+    const normalizedBase = this.normalizeAbsoluteUrl(
+      base,
+      typeof base === "string" && base.trim().startsWith("ws") ? "ws:" : "http:"
+    );
+
+    const url = new URL(normalizedBase.toString());
+    const path = url.pathname.replace(/\/+$/, "");
+
+    if (path !== "/ws/chat") {
+      url.pathname = "/ws/chat";
+    }
+
+    if (url.protocol === "https:") {
+      url.protocol = "wss:";
+    } else if (url.protocol === "http:") {
+      url.protocol = "ws:";
+    } else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+      url.protocol = "ws:";
+    }
+
+    url.searchParams.set("token", token);
+    return url.toString();
+  }
+
+  /**
+   * Create a short-lived launch token that can be redeemed into a vault JWT.
+   *
+   * @param {string} vaultId - The vault ID to create the token for
+   * @param {Object} [options] - Optional launch context
+   * @returns {Promise<Object>} Standard API response containing launchToken and launchUrl
+   */
+  async createVaultLaunchToken(vaultId, options = {}) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        options: { value: options, type: "object", required: false },
+      },
+      "createVaultLaunchToken"
+    );
+
+    const payload = { vaultId };
+    for (const key of ["returnTo", "clientId", "adminId", "sourceUserId"]) {
+      if (typeof options[key] === "string" && options[key].trim()) {
+        payload[key] = options[key].trim();
+      }
+    }
+
+    const response = await this.request(
+      "POST",
+      "/v1/vault-sdk/launch-token",
+      payload,
+      { operation: "createVaultLaunchToken" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Redeem a launch token into a normal vault access token.
+   *
+   * @param {string} launchToken - One-time launch token from createVaultLaunchToken()
+   * @returns {Promise<Object>} Standard API response containing user.accessToken
+   */
+  async redeemVaultLaunchToken(launchToken) {
+    validator.validate(
+      {
+        launchToken: { value: launchToken, type: "string" },
+      },
+      "redeemVaultLaunchToken"
+    );
+
+    const response = await this.request(
+      "POST",
+      "/v1/auth/launch/redeem",
+      { token: launchToken.trim() },
+      { operation: "redeemVaultLaunchToken" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Create and redeem a launch token into the JWT required by the bot chat socket.
+   *
+   * @param {string} vaultId - The vault ID to authenticate for chat
+   * @param {Object} [options] - Optional launch context
+   * @returns {Promise<string>} Vault access token for bot chat
+   */
+  async createBotChatAccessToken(vaultId, options = {}) {
+    const launchResponse = await this.createVaultLaunchToken(vaultId, options);
+    const launchData = this.getResponseData(launchResponse);
+    const launchToken = launchData?.launchToken;
+
+    if (!launchToken) {
+      throw new VaultError(
+        "[Vault SDK] 'createBotChatAccessToken': Launch token was not returned by the server.",
+        { code: "BAD_RESPONSE", operation: "createBotChatAccessToken", data: launchResponse }
+      );
+    }
+
+    const redeemResponse = await this.redeemVaultLaunchToken(launchToken);
+    const redeemData = this.getResponseData(redeemResponse);
+    const accessToken = redeemData?.user?.accessToken;
+
+    if (!accessToken) {
+      throw new VaultError(
+        "[Vault SDK] 'createBotChatAccessToken': Access token was not returned by the server.",
+        { code: "BAD_RESPONSE", operation: "createBotChatAccessToken", data: redeemResponse }
+      );
+    }
+
+    return accessToken;
+  }
+
+  /**
+   * Open a WebSocket connection to the live bot chat service.
+   *
+   * If `token` is omitted, the SDK will mint one from the vault SDK auth flow.
+   * Pass `botId` to automatically join a bot chat once the socket opens.
+   *
+   * @param {string} vaultId - The vault ID to authenticate for chat
+   * @param {Object} [options]
+   * @param {string} [options.token] - Existing vault access token
+   * @param {string} [options.launchToken] - Existing launch token to redeem
+   * @param {string} [options.botId] - Bot ID to auto-join after connect
+   * @param {string} [options.sessionId] - Existing chat session ID to resume
+   * @param {string} [options.wsUrl] - Optional explicit WebSocket base URL
+   * @returns {Promise<Object>} Connection metadata
+   */
+  async connectToBotChat(vaultId, options = {}) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        options: { value: options, type: "object", required: false },
+      },
+      "connectToBotChat"
+    );
+
+    const {
+      token,
+      launchToken,
+      botId,
+      sessionId,
+      wsUrl,
+      ...launchOptions
+    } = options;
+
+    let accessToken = typeof token === "string" && token.trim() ? token.trim() : null;
+
+    if (!accessToken && typeof launchToken === "string" && launchToken.trim()) {
+      const redeemResponse = await this.redeemVaultLaunchToken(launchToken.trim());
+      const redeemData = this.getResponseData(redeemResponse);
+      accessToken = redeemData?.user?.accessToken || null;
+    }
+
+    if (!accessToken) {
+      accessToken = await this.createBotChatAccessToken(vaultId, launchOptions);
+    }
+
+    if (this.botChatWs && this.botChatWs.readyState < WebSocket.CLOSING) {
+      this.botChatWs.close();
+    }
+
+    const socketUrl = this.getBotChatWebSocketUrl(accessToken, wsUrl);
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const socket = new WebSocket(socketUrl);
+      this.botChatWs = socket;
+
+      socket.onopen = () => {
+        this.emit("bot_chat_open");
+
+        if (botId) {
+          this.joinBotChat(botId, sessionId);
+        }
+
+        settled = true;
+        resolve({
+          token: accessToken,
+          url: socketUrl,
+          botId: botId || null,
+          sessionId: sessionId || null,
+        });
+      };
+
+      socket.onmessage = this.botChatOnMessage.bind(this);
+
+      socket.onclose = (event) => {
+        if (this.botChatWs === socket) {
+          this.botChatWs = null;
+        }
+
+        this.emit("bot_chat_close", event);
+
+        if (!settled) {
+          reject(
+            new VaultError(
+              "[Vault SDK] 'connectToBotChat': Bot chat socket closed before the connection was established.",
+              { code: "WEBSOCKET_CLOSED", operation: "connectToBotChat" }
+            )
+          );
+        }
+      };
+
+      socket.onerror = (error) => {
+        const wrapped = new VaultError(
+          `[Vault SDK] 'connectToBotChat': WebSocket connection failed — ${error.message || "Unknown error"}`,
+          { code: "WEBSOCKET_ERROR", operation: "connectToBotChat" }
+        );
+
+        this.emit("bot_chat_stream_error", wrapped);
+
+        if (!settled) {
+          settled = true;
+          reject(wrapped);
+        }
+      };
+    });
+  }
+
+  /**
+   * Internal: Parse and emit bot chat messages.
+   * @private
+   */
+  botChatOnMessage(event) {
+    try {
+      const response = JSON.parse(event.data);
+      this.emit("bot_chat_message", response);
+
+      if (response?.type) {
+        this.emit(`bot_chat_${response.type}`, response.payload);
+      }
+
+      return response;
+    } catch (error) {
+      this.emit(
+        "bot_chat_stream_error",
+        new VaultError(
+          `[Vault SDK] Failed to parse bot chat WebSocket message: ${error.message}`,
+          { code: "BAD_RESPONSE", operation: "botChatOnMessage" }
+        )
+      );
+    }
+  }
+
+  /**
+   * Internal: Send an event through the bot chat socket.
+   * @private
+   */
+  sendBotChatEvent(type, payload = {}) {
+    if (!this.botChatWs || this.botChatWs.readyState !== WebSocket.OPEN) {
+      throw new VaultError(
+        `[Vault SDK] '${type}': Bot chat socket is not connected.`,
+        { code: "WEBSOCKET_NOT_CONNECTED", operation: type }
+      );
+    }
+
+    this.botChatWs.send(JSON.stringify({ type, payload }));
+  }
+
+  /**
+   * Join a bot's live chat stream.
+   *
+   * @param {string} botId - Target bot ID
+   * @param {string} [sessionId] - Optional existing session to resume
+   */
+  joinBotChat(botId, sessionId = null) {
+    validator.validate(
+      {
+        botId: { value: botId, type: "string" },
+        sessionId: { value: sessionId, type: "string", required: false },
+      },
+      "joinBotChat"
+    );
+
+    const payload = { botId: botId.trim() };
+    if (typeof sessionId === "string" && sessionId.trim()) {
+      payload.sessionId = sessionId.trim();
+    }
+
+    this.sendBotChatEvent("join_chat", payload);
+  }
+
+  /**
+   * Send a chat message to the currently joined bot.
+   *
+   * @param {string} message - User message content
+   * @param {Array<{role: string, content: string}>} [history] - Optional recent message history
+   */
+  sendBotChatMessage(message, history = []) {
+    validator.validate(
+      {
+        message: { value: message, type: "string" },
+      },
+      "sendBotChatMessage"
+    );
+
+    if (!Array.isArray(history)) {
+      throw new VaultError(
+        "[Vault SDK] 'sendBotChatMessage': history must be an array when provided.",
+        { code: "INVALID_PARAMETER", operation: "sendBotChatMessage" }
+      );
+    }
+
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) {
+      throw new VaultError(
+        "[Vault SDK] 'sendBotChatMessage': Message cannot be empty.",
+        { code: "INVALID_PARAMETER", operation: "sendBotChatMessage" }
+      );
+    }
+
+    const normalizedHistory = Array.isArray(history)
+      ? history
+          .filter(
+            (entry) =>
+              entry &&
+              (entry.role === "user" || entry.role === "assistant") &&
+              typeof entry.content === "string" &&
+              entry.content.trim()
+          )
+          .map((entry) => ({
+            role: entry.role,
+            content: entry.content.trim(),
+          }))
+      : [];
+
+    this.sendBotChatEvent("send_message", {
+      message: trimmedMessage,
+      history: normalizedHistory,
+    });
+  }
+
+  /**
+   * Broadcast a typing indicator to the user's other active chat tabs.
+   */
+  sendBotChatTyping() {
+    this.sendBotChatEvent("typing", { isTyping: true });
+  }
+
+  /**
+   * Close the bot chat socket if it is open.
+   *
+   * @param {number} [code=1000] - WebSocket close code
+   * @param {string} [reason="Bot chat closed by client"] - Close reason
+   */
+  disconnectBotChat(code = 1000, reason = "Bot chat closed by client") {
+    if (!this.botChatWs) {
+      return;
+    }
+
+    this.botChatWs.close(code, reason);
+    this.botChatWs = null;
   }
 
   // ─── File Upload ──────────────────────────────────────────────
@@ -1041,6 +1463,40 @@ class Vault extends EventEmitter {
       payload,
       { operation: "createBot" }
     );
+    return response.data;
+  }
+
+  /**
+   * Fetch one bot's full details, or all bots with their associated files and folders.
+   *
+   * When `botId` is omitted, the SDK returns the detailed view for every bot
+   * owned by the vault user.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot(s)
+   * @param {string} [botId] - Optional bot ID
+   * @returns {Promise<Object|Object[]>} One detailed bot or an array of detailed bots
+   *
+   * @example
+   * const oneBot = await vault.getBotDetails("your-vault-id", "bot-id");
+   * const allBots = await vault.getBotDetails("your-vault-id");
+   */
+  async getBotDetails(vaultId, botId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string", required: false },
+      },
+      "getBotDetails"
+    );
+
+    const encodedVaultId = encodeURIComponent(vaultId);
+    const endpoint = botId
+      ? `/v1/vault-sdk/bots/${encodeURIComponent(botId)}?vaultId=${encodedVaultId}`
+      : `/v1/vault-sdk/bots?vaultId=${encodedVaultId}`;
+
+    const response = await this.request("GET", endpoint, undefined, {
+      operation: "getBotDetails",
+    });
     return response.data;
   }
 
