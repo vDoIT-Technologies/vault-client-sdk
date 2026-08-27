@@ -1,6 +1,6 @@
 {
   "name": "vault-sdk-dev",
-  "version": "2.3.1",
+  "version": "3.0.0",
   "description": "Vault SDK — File storage client for uploading, managing, and organizing files in your vault",
   "main": "index.js",
   "type": "module",
@@ -9,11 +9,12 @@
   },
   "author": "vDoIT Technologies Ltd, Sector 66, Gurugram, Haryana 122011, India",
   "contributors": [
-    "Shreyash Gupta <shreyashgupta125@gmail.com>"
+    "Shreyash Gupta <shreyashgupta125@gmail.com>",
+    "Pinki Mondal <pinki2021.vdoit@gmail.com>"
   ],
   "license": "ISC",
   "dependencies": {
-    "axios": "^1.7.5",
+    "axios": "^1.6.0",
     "ws": "^8.18.0"
   },
   "peerDependencies": {
