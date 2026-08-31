@@ -264,6 +264,9 @@ vault.on("bot_chat_message_complete", ({ content, sessionId }) => {
 vault.sendBotChatMessage("Hello bot");
 ```
 
+Bot chat connects through `/ws/bot-chat`, which is intended to stay separate from
+legacy twin chat websocket traffic on `/ws/chat`.
+
 You can also pass an existing token:
 
 ```javascript

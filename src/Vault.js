@@ -336,8 +336,8 @@ class Vault extends EventEmitter {
     const url = new URL(normalizedBase.toString());
     const path = url.pathname.replace(/\/+$/, "");
 
-    if (path !== "/ws/chat") {
-      url.pathname = "/ws/chat";
+    if (path !== "/ws/bot-chat") {
+      url.pathname = "/ws/bot-chat";
     }
 
     if (url.protocol === "https:") {
