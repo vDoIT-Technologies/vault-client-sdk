@@ -1,6 +1,6 @@
 {
   "name": "vault-sdk-dev",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "description": "Vault SDK — File storage client for uploading, managing, and organizing files in your vault",
   "main": "index.js",
   "type": "module",
@@ -15,6 +15,7 @@
   "license": "ISC",
   "dependencies": {
     "axios": "^1.6.0",
+    "vault-sdk-dev": "^3.0.2",
     "ws": "^8.18.0"
   },
   "peerDependencies": {
