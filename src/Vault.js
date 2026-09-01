@@ -336,8 +336,8 @@ class Vault extends EventEmitter {
     const url = new URL(normalizedBase.toString());
     const path = url.pathname.replace(/\/+$/, "");
 
-    if (path !== "/ws/chat") {
-      url.pathname = "/ws/chat";
+    if (path !== "/ws/bot-chat") {
+      url.pathname = "/ws/bot-chat";
     }
 
     if (url.protocol === "https:") {
@@ -1464,6 +1464,128 @@ class Vault extends EventEmitter {
       { operation: "createBot" }
     );
     return response.data;
+  }
+
+  /**
+   * Delete a bot owned by the authenticated vault user.
+   *
+   * This mirrors the Twin Vault backend `DELETE /bots/:botId` behavior.
+   *
+   * @param {string} botId - The bot ID to delete
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @returns {Promise<Object>} Standard API response from the backend
+   *
+   * @example
+   * await vault.deleteBot("bot-id", "your-vault-id");
+   */
+  async deleteBot(botId, vaultId) {
+    validator.validate(
+      {
+        botId: { value: botId, type: "string" },
+        vaultId: { value: vaultId, type: "string" },
+      },
+      "deleteBot"
+    );
+
+    const response = await this.request(
+      "DELETE",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}?vaultId=${encodeURIComponent(vaultId)}`,
+      undefined,
+      { operation: "deleteBot" }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Get the extracted text content for a bot file.
+   *
+   * This mirrors the Twin Vault backend `GET /bots/:botId/files/:fileId/text`
+   * behavior through the Vault SDK route chain.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {string} fileId - The bot file ID
+   * @returns {Promise<string>} Extracted text content for the file
+   *
+   * @example
+   * const text = await vault.getBotFileText("your-vault-id", "bot-id", "file-id");
+   */
+  async getBotFileText(vaultId, botId, fileId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        fileId: { value: fileId, type: "string" },
+      },
+      "getBotFileText"
+    );
+
+    const response = await this.request(
+      "GET",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/files/${encodeURIComponent(fileId)}/text?vaultId=${encodeURIComponent(vaultId)}`,
+      undefined,
+      { operation: "getBotFileText" }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Internal helper for bot file actions that share the same route shape.
+   *
+   * @private
+   */
+  async updateBotFileAction(vaultId, botId, fileId, action) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        fileId: { value: fileId, type: "string" },
+        action: { value: action, type: "string" },
+      },
+      "updateBotFileAction"
+    );
+
+    if (action !== "cancel" && action !== "retry") {
+      throw new VaultError(
+        `[Vault SDK] 'updateBotFileAction': Unsupported action "${action}".`,
+        { code: "INVALID_PARAMETER", operation: "updateBotFileAction" }
+      );
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/files/${encodeURIComponent(fileId)}/${action}?vaultId=${encodeURIComponent(vaultId)}`,
+      undefined,
+      { operation: action === "cancel" ? "cancelBotFile" : "retryBotFile" }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Cancel a processing bot file.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {string} fileId - The bot file ID
+   * @returns {Promise<Object>} Standard API response from the backend
+   */
+  async cancelBotFile(vaultId, botId, fileId) {
+    return this.updateBotFileAction(vaultId, botId, fileId, "cancel");
+  }
+
+  /**
+   * Retry a failed bot file.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {string} fileId - The bot file ID
+   * @returns {Promise<Object>} Standard API response from the backend
+   */
+  async retryBotFile(vaultId, botId, fileId) {
+    return this.updateBotFileAction(vaultId, botId, fileId, "retry");
   }
 
   /**

@@ -220,6 +220,38 @@ await vault.uploadFilesToBot(
 );
 ```
 
+#### `deleteBot(botId, vaultId)`
+
+Delete a bot using the same backend behavior as Twin Vault's `DELETE /bots/:botId`.
+
+```javascript
+const result = await vault.deleteBot("bot-id", "your-vault-id");
+```
+
+#### `getBotFileText(vaultId, botId, fileId)`
+
+Fetch the extracted text content for a bot file through the SDK route.
+
+```javascript
+const text = await vault.getBotFileText("your-vault-id", "bot-id", "file-id");
+```
+
+#### `cancelBotFile(vaultId, botId, fileId)`
+
+Cancel a processing bot file through the SDK route.
+
+```javascript
+const result = await vault.cancelBotFile("your-vault-id", "bot-id", "file-id");
+```
+
+#### `retryBotFile(vaultId, botId, fileId)`
+
+Retry a failed bot file through the SDK route.
+
+```javascript
+const result = await vault.retryBotFile("your-vault-id", "bot-id", "file-id");
+```
+
 #### `createVaultLaunchToken(vaultId, options?)`
 
 Create a short-lived launch token for the vault user linked to your SDK credentials. This is mainly useful when you want to hand the auth off elsewhere.
@@ -263,6 +295,9 @@ vault.on("bot_chat_message_complete", ({ content, sessionId }) => {
 
 vault.sendBotChatMessage("Hello bot");
 ```
+
+Bot chat connects through `/ws/bot-chat`, which is intended to stay separate from
+legacy twin chat websocket traffic on `/ws/chat`.
 
 You can also pass an existing token:
 
