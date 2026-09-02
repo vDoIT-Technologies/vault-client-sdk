@@ -1589,6 +1589,122 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Delete one or more bot chat sessions through the bulk-delete route.
+   *
+   * A single session ID is accepted and normalized into a one-item array.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {string|string[]} sessionIds - One session ID or multiple session IDs
+   * @returns {Promise<Object>} Standard API response from the backend
+   *
+   * @example
+   * await vault.deleteBotSessions("your-vault-id", "bot-id", "session-id");
+   * await vault.deleteBotSessions("your-vault-id", "bot-id", ["session-a", "session-b"]);
+   */
+  async deleteBotSessions(vaultId, botId, sessionIds) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+      },
+      "deleteBotSessions"
+    );
+
+    const normalizedSessionIds = Array.isArray(sessionIds)
+      ? [...new Set(sessionIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+      : typeof sessionIds === "string" && sessionIds.trim()
+        ? [sessionIds.trim()]
+        : [];
+
+    if (!normalizedSessionIds.length) {
+      throw new VaultError(
+        "[Vault SDK] 'deleteBotSessions': At least one session ID is required.",
+        { code: "INVALID_PARAMETER", operation: "deleteBotSessions" }
+      );
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/sessions/bulk-delete`,
+      {
+        vaultId,
+        sessionIds: normalizedSessionIds,
+      },
+      { operation: "deleteBotSessions" }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Export one or more bot chat sessions through the bulk-export route.
+   *
+   * A single session ID is accepted and normalized into a one-item array.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {string|string[]} sessionIds - One session ID or multiple session IDs
+   * @param {"drive"|"brain"} saveOption - Where to export the session data
+   * @param {string} [targetBotId] - Optional target bot ID when exporting to brain
+   * @returns {Promise<Object>} Standard API response from the backend
+   *
+   * @example
+   * await vault.exportBotSessions("your-vault-id", "bot-id", "session-id", "drive");
+   * await vault.exportBotSessions("your-vault-id", "bot-id", ["session-a", "session-b"], "brain", "target-bot-id");
+   */
+  async exportBotSessions(vaultId, botId, sessionIds, saveOption, targetBotId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        saveOption: { value: saveOption, type: "string" },
+        targetBotId: { value: targetBotId, type: "string", required: false },
+      },
+      "exportBotSessions"
+    );
+
+    const normalizedSessionIds = Array.isArray(sessionIds)
+      ? [...new Set(sessionIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+      : typeof sessionIds === "string" && sessionIds.trim()
+        ? [sessionIds.trim()]
+        : [];
+
+    if (!normalizedSessionIds.length) {
+      throw new VaultError(
+        "[Vault SDK] 'exportBotSessions': At least one session ID is required.",
+        { code: "INVALID_PARAMETER", operation: "exportBotSessions" }
+      );
+    }
+
+    if (saveOption !== "drive" && saveOption !== "brain") {
+      throw new VaultError(
+        "[Vault SDK] 'exportBotSessions': saveOption must be either \"drive\" or \"brain\".",
+        { code: "INVALID_PARAMETER", operation: "exportBotSessions" }
+      );
+    }
+
+    const payload = {
+      vaultId,
+      sessionIds: normalizedSessionIds,
+      saveOption,
+    };
+
+    if (typeof targetBotId === "string" && targetBotId.trim()) {
+      payload.targetBotId = targetBotId.trim();
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/sessions/bulk-export`,
+      payload,
+      { operation: "exportBotSessions" }
+    );
+
+    return response.data;
+  }
+
+  /**
    * Fetch one bot's full details, or all bots with their associated files and folders.
    *
    * When `botId` is omitted, the SDK returns the detailed view for every bot
@@ -1618,6 +1734,48 @@ class Vault extends EventEmitter {
 
     const response = await this.request("GET", endpoint, undefined, {
       operation: "getBotDetails",
+    });
+    return response.data;
+  }
+
+  /**
+   * Fetch all chat sessions for a bot, or all messages for one session.
+   *
+   * When `sessionId` is omitted, the SDK returns the bot's session list.
+   * When `sessionId` is provided, it returns that session's full message history.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {string} [sessionId] - Optional session ID
+   * @returns {Promise<Object[]|Object>} Session list or session messages response
+   *
+   * @example
+   * const sessions = await vault.getBotSessions("your-vault-id", "bot-id");
+   * const messages = await vault.getBotSessions("your-vault-id", "bot-id", "session-id");
+   */
+  async getBotSessions(vaultId, botId, sessionId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        sessionId: { value: sessionId, type: "string", required: false },
+      },
+      "getBotSessions"
+    );
+
+    const encodedVaultId = encodeURIComponent(vaultId);
+    const normalizedBotId = botId.trim();
+    const normalizedSessionId =
+      typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : null;
+
+    const endpoint = normalizedSessionId
+      ? `/v1/vault-sdk/bots/${encodeURIComponent(normalizedBotId)}/sessions/${encodeURIComponent(
+          normalizedSessionId
+        )}/messages?vaultId=${encodedVaultId}`
+      : `/v1/vault-sdk/bots/${encodeURIComponent(normalizedBotId)}/sessions?vaultId=${encodedVaultId}`;
+
+    const response = await this.request("GET", endpoint, undefined, {
+      operation: "getBotSessions",
     });
     return response.data;
   }

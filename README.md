@@ -252,6 +252,39 @@ Retry a failed bot file through the SDK route.
 const result = await vault.retryBotFile("your-vault-id", "bot-id", "file-id");
 ```
 
+#### `deleteBotSessions(vaultId, botId, sessionIds)`
+
+Delete one or more bot chat sessions through the bulk-delete route.
+
+```javascript
+await vault.deleteBotSessions("your-vault-id", "bot-id", "session-id");
+await vault.deleteBotSessions("your-vault-id", "bot-id", ["session-a", "session-b"]);
+```
+
+#### `exportBotSessions(vaultId, botId, sessionIds, saveOption, targetBotId?)`
+
+Export one or more bot chat sessions through the bulk-export route.
+
+```javascript
+await vault.exportBotSessions("your-vault-id", "bot-id", "session-id", "drive");
+await vault.exportBotSessions(
+  "your-vault-id",
+  "bot-id",
+  ["session-a", "session-b"],
+  "brain",
+  "target-bot-id"
+);
+```
+
+#### `getBotSessions(vaultId, botId, sessionId?)`
+
+Fetch all chat sessions for a bot, or fetch all messages for one session.
+
+```javascript
+const sessions = await vault.getBotSessions("your-vault-id", "bot-id");
+const messages = await vault.getBotSessions("your-vault-id", "bot-id", "session-id");
+```
+
 #### `createVaultLaunchToken(vaultId, options?)`
 
 Create a short-lived launch token for the vault user linked to your SDK credentials. This is mainly useful when you want to hand the auth off elsewhere.
