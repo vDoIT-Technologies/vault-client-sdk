@@ -1705,6 +1705,89 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Remove either a bot file or a linked storage folder from a bot.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {"file"|"folder"} assetType - The asset type to remove
+   * @param {string} assetId - The file ID or folder ID to remove
+   * @param {{ permanent?: boolean, keepTranscript?: boolean }} [options] - Optional file-removal flags
+   * @returns {Promise<Object>} Standard API response from the backend
+   *
+   * @example
+   * await vault.removeBotAsset("your-vault-id", "bot-id", "file", "file-id", {
+   *   permanent: true,
+   *   keepTranscript: false,
+   * });
+   * await vault.removeBotAsset("your-vault-id", "bot-id", "folder", "folder-id");
+   */
+  async removeBotAsset(vaultId, botId, assetType, assetId, options = {}) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        assetType: { value: assetType, type: "string" },
+        assetId: { value: assetId, type: "string" },
+        options: { value: options, type: "object", required: false },
+      },
+      "removeBotAsset"
+    );
+
+    const normalizedType =
+      typeof assetType === "string" ? assetType.trim().toLowerCase() : "";
+
+    if (normalizedType !== "file" && normalizedType !== "folder") {
+      throw new VaultError(
+        "[Vault SDK] 'removeBotAsset': assetType must be either \"file\" or \"folder\".",
+        { code: "INVALID_PARAMETER", operation: "removeBotAsset" }
+      );
+    }
+
+    const { permanent, keepTranscript } = options || {};
+    const params = new URLSearchParams({
+      vaultId: vaultId.trim(),
+    });
+
+    if (normalizedType === "folder" && (permanent !== undefined || keepTranscript !== undefined)) {
+      throw new VaultError(
+        "[Vault SDK] 'removeBotAsset': permanent and keepTranscript are supported only for assetType \"file\".",
+        { code: "INVALID_PARAMETER", operation: "removeBotAsset" }
+      );
+    }
+
+    if (permanent !== undefined) {
+      if (typeof permanent !== "boolean") {
+        throw new VaultError(
+          "[Vault SDK] 'removeBotAsset': options.permanent must be a boolean when provided.",
+          { code: "INVALID_PARAMETER", operation: "removeBotAsset" }
+        );
+      }
+      params.set("permanent", String(permanent));
+    }
+
+    if (keepTranscript !== undefined) {
+      if (typeof keepTranscript !== "boolean") {
+        throw new VaultError(
+          "[Vault SDK] 'removeBotAsset': options.keepTranscript must be a boolean when provided.",
+          { code: "INVALID_PARAMETER", operation: "removeBotAsset" }
+        );
+      }
+      params.set("keepTranscript", String(keepTranscript));
+    }
+
+    const response = await this.request(
+      "DELETE",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/assets/${encodeURIComponent(
+        normalizedType
+      )}/${encodeURIComponent(assetId)}?${params.toString()}`,
+      undefined,
+      { operation: "removeBotAsset" }
+    );
+
+    return response.data;
+  }
+
+  /**
    * Fetch one bot's full details, or all bots with their associated files and folders.
    *
    * When `botId` is omitted, the SDK returns the detailed view for every bot

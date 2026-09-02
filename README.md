@@ -276,6 +276,18 @@ await vault.exportBotSessions(
 );
 ```
 
+#### `removeBotAsset(vaultId, botId, assetType, assetId)`
+
+Remove either a bot file or a linked storage folder from a bot.
+
+```javascript
+await vault.removeBotAsset("your-vault-id", "bot-id", "file", "file-id", {
+  permanent: true,
+  keepTranscript: false,
+});
+await vault.removeBotAsset("your-vault-id", "bot-id", "folder", "folder-id");
+```
+
 #### `getBotSessions(vaultId, botId, sessionId?)`
 
 Fetch all chat sessions for a bot, or fetch all messages for one session.
