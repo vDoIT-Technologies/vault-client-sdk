@@ -1467,6 +1467,50 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Update a bot through the Vault SDK.
+   *
+   * Any supported field may be omitted for a partial update.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID to update
+   * @param {Object} updates
+   * @returns {Promise<Object>} Updated bot response
+   */
+  async updateBot(vaultId, botId, updates) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        updates: { value: updates, type: "object" },
+        name: { value: updates?.name, type: "string", required: false },
+        description: { value: updates?.description, type: "string", required: false },
+        profession: { value: updates?.profession, type: "string", required: false },
+        useLLMFallback: { value: updates?.useLLMFallback, type: "boolean", required: false },
+        wordLimit: { value: updates?.wordLimit, type: "number", required: false },
+      },
+      "updateBot"
+    );
+
+    const payload = { vaultId };
+
+    if (updates?.name !== undefined) payload.name = updates.name.trim();
+    if (updates?.description !== undefined) payload.description = updates.description;
+    if (updates?.profession !== undefined) payload.profession = updates.profession;
+    if (updates?.useLLMFallback !== undefined) {
+      payload.useLLMFallback = updates.useLLMFallback;
+    }
+    if (updates?.wordLimit !== undefined) payload.wordLimit = updates.wordLimit;
+
+    const response = await this.request(
+      "PATCH",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}`,
+      payload,
+      { operation: "updateBot" }
+    );
+    return response.data;
+  }
+
+  /**
    * Delete a bot owned by the authenticated vault user.
    *
    * This mirrors the Twin Vault backend `DELETE /bots/:botId` behavior.
