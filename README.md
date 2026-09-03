@@ -167,6 +167,20 @@ const bot = await vault.createBot("your-vault-id", {
 | `description` | No | Bot personality / description |
 | `profession` | No | Profession label for the bot |
 
+#### `updateBot(vaultId, botId, updates)`
+
+Update a bot through the Vault SDK. You can send any subset of the editable bot fields.
+
+```javascript
+const updated = await vault.updateBot("your-vault-id", "bot-id", {
+  name: "Support Bot v2",
+  description: "Helpful and concise",
+  profession: "Customer Support",
+  useLLMFallback: true,
+  wordLimit: 200,
+});
+```
+
 #### `getBotDetails(vaultId, botId?)`
 
 Fetch one bot's full details, or all bots with their associated files and folders.
@@ -250,6 +264,51 @@ Retry a failed bot file through the SDK route.
 
 ```javascript
 const result = await vault.retryBotFile("your-vault-id", "bot-id", "file-id");
+```
+
+#### `deleteBotSessions(vaultId, botId, sessionIds)`
+
+Delete one or more bot chat sessions through the bulk-delete route.
+
+```javascript
+await vault.deleteBotSessions("your-vault-id", "bot-id", "session-id");
+await vault.deleteBotSessions("your-vault-id", "bot-id", ["session-a", "session-b"]);
+```
+
+#### `exportBotSessions(vaultId, botId, sessionIds, saveOption, targetBotId?)`
+
+Export one or more bot chat sessions through the bulk-export route.
+
+```javascript
+await vault.exportBotSessions("your-vault-id", "bot-id", "session-id", "drive");
+await vault.exportBotSessions(
+  "your-vault-id",
+  "bot-id",
+  ["session-a", "session-b"],
+  "brain",
+  "target-bot-id"
+);
+```
+
+#### `removeBotAsset(vaultId, botId, assetType, assetId)`
+
+Remove either a bot file or a linked storage folder from a bot.
+
+```javascript
+await vault.removeBotAsset("your-vault-id", "bot-id", "file", "file-id", {
+  permanent: true,
+  keepTranscript: false,
+});
+await vault.removeBotAsset("your-vault-id", "bot-id", "folder", "folder-id");
+```
+
+#### `getBotSessions(vaultId, botId, sessionId?)`
+
+Fetch all chat sessions for a bot, or fetch all messages for one session.
+
+```javascript
+const sessions = await vault.getBotSessions("your-vault-id", "bot-id");
+const messages = await vault.getBotSessions("your-vault-id", "bot-id", "session-id");
 ```
 
 #### `createVaultLaunchToken(vaultId, options?)`
