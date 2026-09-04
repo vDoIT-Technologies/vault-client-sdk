@@ -1633,6 +1633,202 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Quote the Twin Points cost of transcribing media before uploading or linking it.
+   *
+   * Pass direct file metadata in `payload.files`, folder IDs in `payload.folderIds`,
+   * or both. Each file accepts `{ name, size, fileId?, durationSeconds? }`.
+   *
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The target bot ID
+   * @param {Object} [payload]
+   * @param {Array<Object>} [payload.files] - Files to quote
+   * @param {string[]} [payload.folderIds] - Existing storage folders to inspect
+   * @returns {Promise<Object>} Quote response from the bot endpoint
+   */
+  async quoteTranscription(vaultId, botId, payload = {}) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        payload: { value: payload, type: "object", required: false },
+      },
+      "quoteTranscription"
+    );
+
+    const files = Array.isArray(payload.files)
+      ? payload.files
+          .filter((file) => file && typeof file === "object")
+          .map((file) => ({
+            name: typeof file.name === "string" ? file.name.trim() : "",
+            size: Number(file.size || 0),
+            ...(typeof file.fileId === "string" && file.fileId.trim()
+              ? { fileId: file.fileId.trim() }
+              : {}),
+            ...(Number.isFinite(Number(file.durationSeconds))
+              ? { durationSeconds: Number(file.durationSeconds) }
+              : {}),
+          }))
+          .filter((file) => file.name)
+      : [];
+
+    const folderIds = Array.isArray(payload.folderIds)
+      ? [...new Set(payload.folderIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean))]
+      : [];
+
+    if (!files.length && !folderIds.length) {
+      throw new VaultError(
+        "[Vault SDK] 'quoteTranscription': At least one file or folder ID is required.",
+        { code: "INVALID_PARAMETER", operation: "quoteTranscription" }
+      );
+    }
+
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/files/quote`,
+      {
+        vaultId,
+        files,
+        folderIds,
+      },
+      { operation: "quoteTranscription" }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Internal helper for bot uploads that now use the same presign -> upload
+   * -> register flow as regular drive uploads.
+   *
+   * @private
+   */
+  async uploadSingleFileToBot(file, vaultId, botId) {
+    const resolved = await resolveFile(file, "uploadFilesToBot");
+    const fileSize = resolved.buffer.length;
+
+    if (fileSize > MAX_FILE_SIZE) {
+      throw new VaultError(
+        `[Vault SDK] 'uploadFilesToBot': "${resolved.name}" is ${formatFileSize(fileSize)}, ` +
+          `which exceeds the maximum upload size of ${formatFileSize(MAX_FILE_SIZE)}.`,
+        { code: "FILE_TOO_LARGE", operation: "uploadFilesToBot" }
+      );
+    }
+
+    const fileName = sanitizeFileName(resolved.name);
+    const fileType = resolved.type || contentTypeFor(fileName);
+    const contentHash = crypto
+      .createHash("sha256")
+      .update(resolved.buffer)
+      .digest("hex");
+
+    let presign;
+    try {
+      const response = await this.request(
+        "POST",
+        `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/files/presign`,
+        {
+          vaultId,
+          fileName,
+          fileType,
+          fileSize,
+          contentHash,
+        },
+        { operation: "uploadFilesToBot" }
+      );
+      presign = response.data?.data ?? response.data;
+    } catch (error) {
+      if (error instanceof VaultError) throw error;
+      throw new VaultError(
+        `[Vault SDK] 'uploadFilesToBot': Failed to get an upload URL for "${fileName}" — ${error.message}`,
+        { code: "PRESIGN_FAILED", operation: "uploadFilesToBot" }
+      );
+    }
+
+    const { url, key, contentType, sanitizedName, userId, metadata } = presign || {};
+
+    if (!url || !key) {
+      throw new VaultError(
+        `[Vault SDK] 'uploadFilesToBot': The server did not return an upload URL for "${fileName}".`,
+        { code: "PRESIGN_FAILED", operation: "uploadFilesToBot", data: presign }
+      );
+    }
+
+    const metaHeaders = metadata
+      ? Object.fromEntries(
+          Object.entries(metadata).map(([metaKey, value]) => [
+            `x-amz-meta-${metaKey}`,
+            String(value),
+          ])
+        )
+      : {
+          "x-amz-meta-original-filename": sanitizedName || fileName,
+          "x-amz-meta-content-hash": contentHash,
+          "x-amz-meta-user-id": String(userId ?? ""),
+          "x-amz-meta-file-size": fileSize.toString(),
+        };
+
+    try {
+      await axios.put(url, resolved.buffer, {
+        headers: {
+          "Content-Type": contentType || fileType,
+          ...metaHeaders,
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+    } catch (error) {
+      const status = error.response?.status;
+      let detail = error.message;
+      if (status === 403) {
+        detail =
+          "The presigned URL has expired or required signing headers are missing. Please try uploading again.";
+      }
+      if (status === 413) {
+        detail = `File "${fileName}" exceeds the maximum allowed upload size.`;
+      }
+
+      throw new VaultError(
+        `[Vault SDK] 'uploadFilesToBot': Failed to upload "${fileName}" to storage — ${detail}`,
+        {
+          status,
+          code: "STORAGE_UPLOAD_FAILED",
+          operation: "uploadFilesToBot",
+        }
+      );
+    }
+
+    const rawDurationSeconds =
+      typeof file === "object" && file !== null ? file.durationSeconds : undefined;
+    const durationSeconds = Number(rawDurationSeconds);
+
+    try {
+      const response = await this.request(
+        "POST",
+        `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/files/register`,
+        {
+          vaultId,
+          fileName: sanitizedName || fileName,
+          filebaseKey: key,
+          fileSize,
+          contentHash,
+          ...(Number.isFinite(durationSeconds) && durationSeconds >= 0
+            ? { durationSeconds }
+            : {}),
+        },
+        { operation: "uploadFilesToBot" }
+      );
+      return response.data;
+    } catch (error) {
+      if (error instanceof VaultError) throw error;
+      throw new VaultError(
+        `[Vault SDK] 'uploadFilesToBot': File "${fileName}" was uploaded to storage but failed to register. ` +
+          `Please contact support if this persists — ${error.message}`,
+        { code: "REGISTER_FAILED", operation: "uploadFilesToBot" }
+      );
+    }
+  }
+
+  /**
    * Delete one or more bot chat sessions through the bulk-delete route.
    *
    * A single session ID is accepted and normalized into a one-item array.
@@ -2046,36 +2242,79 @@ class Vault extends EventEmitter {
       );
     }
 
-    if (typeof FormData === "undefined" || typeof Blob === "undefined") {
+    const results = await Promise.all(
+      normalizedFiles.map(async (file, index) => {
+        const label =
+          baseName(
+            typeof file === "string" ? file : file?.name || file?.path || ""
+          ) || `file[${index}]`;
+
+        try {
+          const response = await this.uploadSingleFileToBot(file, vaultId, botId);
+          return { status: "success", fileName: label, response };
+        } catch (error) {
+          return {
+            status: "failed",
+            fileName: label,
+            error: error.message,
+            code: error.code || "UPLOAD_FAILED",
+          };
+        }
+      })
+    );
+
+    const successful = results.filter((result) => result.status === "success");
+    if (!successful.length) {
       throw new VaultError(
-        "[Vault SDK] 'uploadFilesToBot': FormData and Blob support are required in this runtime.",
-        { code: "UNSUPPORTED_RUNTIME", operation: "uploadFilesToBot" }
+        "[Vault SDK] 'uploadFilesToBot': All files failed to upload.",
+        { code: "UPLOAD_FAILED", operation: "uploadFilesToBot", data: { results } }
       );
     }
 
-    const formData = new FormData();
-    formData.append("vaultId", vaultId);
+    const filesOut = [];
+    const skipped = [];
 
-    for (const file of normalizedFiles) {
-      const resolved = await resolveFile(file, "uploadFilesToBot");
-      const blob = new Blob([resolved.buffer], {
-        type: resolved.type || contentTypeFor(resolved.name),
-      });
-      formData.append("files", blob, resolved.name);
+    for (const result of successful) {
+      const payload = result.response?.data || {};
+      if (payload.file) filesOut.push(payload.file);
+      if (Array.isArray(payload.skipped)) skipped.push(...payload.skipped);
     }
 
-    const response = await this.request(
-      "POST",
-      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/files?vaultId=${encodeURIComponent(vaultId)}`,
-      formData,
-      {
-        operation: "uploadFilesToBot",
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
+    for (const result of results) {
+      if (result.status === "failed") {
+        skipped.push({
+          name: result.fileName,
+          reason: result.error,
+          code: result.code,
+        });
       }
-    );
-    return response.data;
+    }
+
+    const successCount = successful.length;
+    const failureCount = results.length - successCount;
+    const messageParts = [];
+    if (filesOut.length) {
+      messageParts.push(
+        `${filesOut.length} file${filesOut.length === 1 ? "" : "s"} sent for ingestion`
+      );
+    }
+    if (skipped.length) {
+      messageParts.push(`${skipped.length} skipped`);
+    }
+
+    return {
+      success: true,
+      message: messageParts.length
+        ? `${messageParts.join(", ")}. Processing happens in the background.`
+        : "Nothing to upload.",
+      data: {
+        files: filesOut,
+        skipped,
+        results,
+        successCount,
+        failureCount,
+      },
+    };
   }
 
   /**

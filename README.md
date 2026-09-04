@@ -224,6 +224,10 @@ await vault.addDriveFoldersToBot(
 
 Upload one or more files directly to a bot and start ingestion.
 
+This method now uses the bot upload flow internally: it gets a presigned URL,
+uploads each file straight to storage, and then registers it with the bot. The
+same method works for both smaller and larger files.
+
 ```javascript
 await vault.uploadFilesToBot("./faq.pdf", "your-vault-id", "bot-id");
 
@@ -232,6 +236,20 @@ await vault.uploadFilesToBot(
   "your-vault-id",
   "bot-id"
 );
+```
+
+#### `quoteTranscription(vaultId, botId, payload)`
+
+Quote the Twin Points cost of transcribing media before uploading files or linking folders.
+
+```javascript
+const quote = await vault.quoteTranscription("your-vault-id", "bot-id", {
+  files: [{ name: "call.mp3", size: 1048576 }],
+});
+
+const folderQuote = await vault.quoteTranscription("your-vault-id", "bot-id", {
+  folderIds: ["folder-a", "folder-b"],
+});
 ```
 
 #### `deleteBot(botId, vaultId)`
