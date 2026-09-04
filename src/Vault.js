@@ -1138,6 +1138,81 @@ class Vault extends EventEmitter {
     return response.data;
   }
 
+  /**
+   * Get the wallet summary for the authenticated vault user.
+   *
+   * @param {string} vaultId - The vault ID
+   * @returns {Promise<Object>} Wallet summary including points and status
+   *
+   * @example
+   * const wallet = await vault.getWalletInfo("your-vault-id");
+   */
+  async getWalletInfo(vaultId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+      },
+      "getWalletInfo"
+    );
+
+    const queryString = `?vaultId=${encodeURIComponent(vaultId)}`;
+    const response = await this.request(
+      "GET",
+      `/v1/vault-sdk/wallet/info${queryString}`,
+      undefined,
+      { operation: "getWalletInfo" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Get paginated wallet transaction history for the authenticated vault user.
+   *
+   * @param {string} vaultId - The vault ID
+   * @param {Object} [query]
+   * @param {number} [query.page] - Page number (defaults to 1)
+   * @param {number} [query.limit] - Page size (defaults to 20)
+   * @param {string} [query.category] - Optional transaction category filter
+   * @returns {Promise<Object>} Transaction history and pagination metadata
+   *
+   * @example
+   * const history = await vault.getTransactionHistory("your-vault-id");
+   * const filtered = await vault.getTransactionHistory("your-vault-id", {
+   *   page: 2,
+   *   limit: 10,
+   *   category: "credit",
+   * });
+   */
+  async getTransactionHistory(vaultId, query = {}) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        query: { value: query, type: "object", required: false },
+      },
+      "getTransactionHistory"
+    );
+
+    const params = new URLSearchParams({ vaultId });
+
+    if (query.page !== undefined) {
+      params.set("page", String(query.page));
+    }
+    if (query.limit !== undefined) {
+      params.set("limit", String(query.limit));
+    }
+    if (typeof query.category === "string" && query.category.trim()) {
+      params.set("category", query.category.trim());
+    }
+
+    const response = await this.request(
+      "GET",
+      `/v1/vault-sdk/wallet/transactions?${params.toString()}`,
+      undefined,
+      { operation: "getTransactionHistory" }
+    );
+    return response.data;
+  }
+
   // ─── Folder Operations ────────────────────────────────────────
 
   /**

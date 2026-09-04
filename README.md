@@ -470,6 +470,28 @@ Get active subscriptions.
 const subs = await vault.getSubscriptions("your-vault-id");
 ```
 
+#### `getWalletInfo(vaultId)`
+
+Get the wallet summary for the authenticated vault user.
+
+```javascript
+const wallet = await vault.getWalletInfo("your-vault-id");
+```
+
+#### `getTransactionHistory(vaultId, query?)`
+
+Get paginated wallet transaction history. You can optionally filter by page, limit, and category.
+
+```javascript
+const history = await vault.getTransactionHistory("your-vault-id");
+
+const filtered = await vault.getTransactionHistory("your-vault-id", {
+  page: 2,
+  limit: 10,
+  category: "credit",
+});
+```
+
 ### Vault Operations
 
 #### `createVault(email, platformId?)`
