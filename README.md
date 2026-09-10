@@ -559,3 +559,50 @@ try {
 ## License
 
 vDoIT Technologies Ltd 2025
+
+#### `setBotLlm(vaultId, botId, config)`
+
+Verify, save and enable a bot's custom LLM. The vault must be associated with your
+client API key, have SDK access enabled, and own the bot.
+
+```js
+const result = await vault.setBotLlm("your-vault-id", "bot-id", {
+  provider: "CUSTOM", // OPENAI | ANTHROPIC | GEMINI | CUSTOM
+  model: "your-provider-model",
+  baseUrl: "https://your-provider.example/v1", // Required for CUSTOM
+  apiKey: "your-provider-api-key",
+});
+```
+
+`provider` and `model` are required. Omit `apiKey` to reuse the bot's stored key
+when changing its configuration. The backend verifies the configuration before
+saving, encrypts the key, and returns the updated bot with a masked key hint.
+The server must have `BOT_LLM_ENCRYPTION_KEY` configured. Saving enables the
+custom LLM for subsequent chat requests.
+
+Uses `PUT /v1/vault-sdk/bots/:botId/llm` through the SDK backend proxy.
+
+#### `testBotLlm(vaultId, botId, config)`
+
+Verify a custom LLM provider, model, and API key without saving or enabling the
+configuration. `config` accepts the same fields as `setBotLlm`.
+
+```js
+const result = await vault.testBotLlm("your-vault-id", "bot-id", {
+  provider: "OPENAI",
+  model: "gpt-5.6-terra",
+  apiKey: "your-provider-api-key",
+});
+```
+
+Uses `POST /v1/vault-sdk/bots/:botId/llm/test` through the SDK backend proxy.
+
+#### `getLlmProviders(vaultId)`
+
+Fetch the supported custom LLM providers and their available models.
+
+```js
+const providers = await vault.getLlmProviders("your-vault-id");
+```
+
+Uses `GET /v1/vault-sdk/bots/llm-providers?vaultId=:vaultId`.

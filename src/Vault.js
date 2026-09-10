@@ -1542,6 +1542,97 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Verify, save and enable a bot's custom LLM configuration.
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {Object} config
+   * @param {string} config.provider - OPENAI, ANTHROPIC, GEMINI or CUSTOM
+   * @param {string} config.model - Provider model name
+   * @param {string} [config.baseUrl] - Required for CUSTOM (OpenAI-compatible endpoint)
+   * @param {string} [config.apiKey] - Required on first setup; omit to reuse the stored key
+   * @returns {Promise<Object>} Updated bot response with masked key information
+   */
+  async setBotLlm(vaultId, botId, config) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        config: { value: config, type: "object" },
+        provider: { value: config?.provider, type: "string" },
+        model: { value: config?.model, type: "string" },
+        baseUrl: { value: config?.baseUrl, type: "string", required: false },
+        apiKey: { value: config?.apiKey, type: "string", required: false },
+      },
+      "setBotLlm"
+    );
+    const payload = { vaultId, provider: config.provider, model: config.model };
+    if (config.baseUrl !== undefined) payload.baseUrl = config.baseUrl;
+    if (config.apiKey !== undefined) payload.apiKey = config.apiKey;
+    const response = await this.request(
+      "PUT",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/llm`,
+      payload,
+      { operation: "setBotLlm" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Verify a bot's custom LLM configuration without saving or enabling it.
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {Object} config - Provider configuration to verify
+   * @param {string} config.provider - OPENAI, ANTHROPIC, GEMINI or CUSTOM
+   * @param {string} config.model - Provider model name
+   * @param {string} [config.baseUrl] - Required for CUSTOM (OpenAI-compatible endpoint)
+   * @param {string} [config.apiKey] - Omit to reuse the bot's stored key
+   * @returns {Promise<Object>} Provider verification response
+   */
+  async testBotLlm(vaultId, botId, config) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        config: { value: config, type: "object" },
+        provider: { value: config?.provider, type: "string" },
+        model: { value: config?.model, type: "string" },
+        baseUrl: { value: config?.baseUrl, type: "string", required: false },
+        apiKey: { value: config?.apiKey, type: "string", required: false },
+      },
+      "testBotLlm"
+    );
+    const payload = { vaultId, provider: config.provider, model: config.model };
+    if (config.baseUrl !== undefined) payload.baseUrl = config.baseUrl;
+    if (config.apiKey !== undefined) payload.apiKey = config.apiKey;
+    const response = await this.request(
+      "POST",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/llm/test`,
+      payload,
+      { operation: "testBotLlm" }
+    );
+    return response.data;
+  }
+
+  /**
+   * List the custom LLM providers and models supported by Vault.
+   * @param {string} vaultId - A vault ID associated with the client API key
+   * @returns {Promise<Object>} Provider catalog response
+   */
+  async getLlmProviders(vaultId) {
+    validator.validate(
+      { vaultId: { value: vaultId, type: "string" } },
+      "getLlmProviders"
+    );
+    const response = await this.request(
+      "GET",
+      `/v1/vault-sdk/bots/llm-providers?vaultId=${encodeURIComponent(vaultId)}`,
+      undefined,
+      { operation: "getLlmProviders" }
+    );
+    return response.data;
+  }
+
+  /**
    * Update a bot through the Vault SDK.
    *
    * Any supported field may be omitted for a partial update.
