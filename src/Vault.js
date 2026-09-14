@@ -152,7 +152,7 @@ class Vault extends EventEmitter {
    * @returns {string} Hex-encoded HMAC signature
    */
   signRequest(method, endpoint, timestamp, payload) {
-    const bodylessMethod = ["GET", "HEAD", "DELETE"].includes(
+    const bodylessMethod = ["GET", "HEAD"].includes(
       String(method).toUpperCase()
     );
     const emptyObject =
