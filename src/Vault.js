@@ -171,6 +171,17 @@ class Vault extends EventEmitter {
   }
 
   /**
+   * Legacy signature used by the Twin WebSocket endpoint.
+   * HTTP Vault SDK requests use signRequest() above.
+   */
+  signLegacy(timestamp) {
+    return crypto
+      .createHmac("sha256", this.apiSecret)
+      .update(this.apiKey + timestamp)
+      .digest("hex");
+  }
+
+  /**
    * Internal: For bulk-style SDK operations, surface a real SDK error when the
    * server processed the request but every requested item failed.
    *
@@ -225,15 +236,7 @@ class Vault extends EventEmitter {
 
     const timestamp = Date.now().toString();
     const wsUrl = new URL(this.wsUrl);
-    const signedPath = wsUrl.pathname || "/";
-    const signedQuery = new URLSearchParams(wsUrl.searchParams);
-    ["apikey", "signature", "timestamp", "clientApiKey"].forEach((key) =>
-      signedQuery.delete(key)
-    );
-    const canonicalPath = signedQuery.toString()
-      ? `${signedPath}?${signedQuery.toString()}`
-      : signedPath;
-    const signature = this.signRequest("GET", canonicalPath, timestamp);
+    const signature = this.signLegacy(timestamp);
 
     return new Promise((resolve, reject) => {
       wsUrl.searchParams.set("apikey", this.apiKey);
