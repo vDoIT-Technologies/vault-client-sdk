@@ -87,7 +87,7 @@ class Vault extends EventEmitter {
    */
   async request(method, endpoint, payload, options = {}) {
     const timestamp = Date.now().toString();
-    const signature = this.sign(timestamp);
+    const signature = this.signRequest(method, endpoint, timestamp, payload);
 
     const headers = {
       timestamp,
@@ -143,13 +143,27 @@ class Vault extends EventEmitter {
   }
 
   /**
-   * Internal: Generate HMAC-SHA256 signature for request authentication.
+   * Internal: Generate an HMAC-SHA256 signature bound to the full HTTP request.
    *
+   * @param {string} method - HTTP method
+   * @param {string} endpoint - API endpoint path, including query string
    * @param {string} timestamp - Current timestamp string
+   * @param {Object} [payload] - Request body
    * @returns {string} Hex-encoded HMAC signature
    */
-  sign(timestamp) {
-    const message = this.apiKey + timestamp;
+  signRequest(method, endpoint, timestamp, payload) {
+    const bodyHash = crypto
+      .createHash("sha256")
+      .update(payload === undefined ? "" : JSON.stringify(payload))
+      .digest("hex");
+    const message = [
+      String(method).toUpperCase(),
+      endpoint,
+      timestamp,
+      this.apiKey,
+      bodyHash,
+    ].join("\n");
+
     return crypto
       .createHmac("sha256", this.apiSecret)
       .update(message)
@@ -210,12 +224,23 @@ class Vault extends EventEmitter {
     }
 
     const timestamp = Date.now().toString();
-    const signature = this.sign(timestamp);
+    const wsUrl = new URL(this.wsUrl);
+    const signedPath = wsUrl.pathname || "/";
+    const signedQuery = new URLSearchParams(wsUrl.searchParams);
+    ["apikey", "signature", "timestamp", "clientApiKey"].forEach((key) =>
+      signedQuery.delete(key)
+    );
+    const canonicalPath = signedQuery.toString()
+      ? `${signedPath}?${signedQuery.toString()}`
+      : signedPath;
+    const signature = this.signRequest("GET", canonicalPath, timestamp);
 
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(
-        `${this.wsUrl}?apikey=${this.apiKey}&signature=${signature}&timestamp=${timestamp}&clientApiKey=${this.clientApiKey}`
-      );
+      wsUrl.searchParams.set("apikey", this.apiKey);
+      wsUrl.searchParams.set("signature", signature);
+      wsUrl.searchParams.set("timestamp", timestamp);
+      wsUrl.searchParams.set("clientApiKey", this.clientApiKey);
+      this.ws = new WebSocket(wsUrl.toString());
 
       this.ws.onopen = () => {
         resolve();
@@ -1495,23 +1520,30 @@ class Vault extends EventEmitter {
    * });
    */
   async createBot(vaultId, bot) {
+
+    const normalizedBot = {
+      ...bot,
+      description: bot?.description?.trim() || undefined,
+      profession: bot?.profession?.trim() || undefined,
+    };
+
     validator.validate(
       {
         vaultId: { value: vaultId, type: "string" },
-        bot: { value: bot, type: "object" },
+        bot: { value: normalizedBot, type: "object" },
         name: {
-          value: bot?.name,
+          value: normalizedBot.name,
           type: "string",
           message:
-            "[Vault SDK] 'createBot' requires bot.name to be a non-empty string.",
+            "[Vault SDK] 'createBot' requires bot's name to be a non-empty string.",
         },
         description: {
-          value: bot?.description,
+          value: normalizedBot.description,
           type: "string",
           required: false,
         },
         profession: {
-          value: bot?.profession,
+          value: normalizedBot.profession,
           type: "string",
           required: false,
         },
