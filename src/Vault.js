@@ -12,6 +12,16 @@ import {
   resolveFile,
 } from "./utils/file.js";
 
+const WS_CHAT_PROTOCOL = "vault-chat";
+
+const toBase64Url = (text) => {
+  const base64 =
+    typeof Buffer !== "undefined"
+      ? Buffer.from(text, "utf8").toString("base64")
+      : btoa(unescape(encodeURIComponent(text)));
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
 class Vault extends EventEmitter {
   /**
    * Create a new Vault SDK instance.
@@ -246,31 +256,71 @@ class Vault extends EventEmitter {
       );
     }
 
+    if (this.ws && this.ws.readyState < WebSocket.CLOSING) {
+      this.ws.close();
+    }
+
     const timestamp = Date.now().toString();
-    const wsUrl = new URL(this.wsUrl);
-    const signature = this.signLegacy(timestamp);
+    const credentials = toBase64Url(
+      JSON.stringify({
+        apikey: this.apiKey,
+        signature: this.signLegacy(timestamp),
+        timestamp,
+        clientApiKey: this.clientApiKey,
+      })
+    );
 
     return new Promise((resolve, reject) => {
-      wsUrl.searchParams.set("apikey", this.apiKey);
-      wsUrl.searchParams.set("signature", signature);
-      wsUrl.searchParams.set("timestamp", timestamp);
-      wsUrl.searchParams.set("clientApiKey", this.clientApiKey);
-      this.ws = new WebSocket(wsUrl.toString());
+      let settled = false;
+      // Credentials travel in the handshake, not the URL, so proxies and access
+      // logs never record them.
+      const socket = new WebSocket(new URL(this.wsUrl).toString(), [
+        WS_CHAT_PROTOCOL,
+        `vault-auth.${credentials}`,
+      ]);
+      this.ws = socket;
 
-      this.ws.onopen = () => {
+      socket.onopen = () => {
+        settled = true;
         resolve();
       };
 
-      this.ws.onmessage = this.wsOnMessage.bind(this);
-      this.ws.onclose = () => {};
+      socket.onmessage = this.wsOnMessage.bind(this);
 
-      this.ws.onerror = (error) => {
-        reject(
-          new VaultError(
-            `[Vault SDK] 'connectToWebsocket': WebSocket connection failed — ${error.message || "Unknown error"}`,
-            { code: "WEBSOCKET_ERROR", operation: "connectToWebsocket" }
-          )
+      socket.onerror = (error) => {
+        const wrapped = new VaultError(
+          `[Vault SDK] 'connectToWebsocket': WebSocket connection failed — ${error.message || "Unknown error"}`,
+          { code: "WEBSOCKET_ERROR", operation: "connectToWebsocket" }
         );
+
+        if (!settled) {
+          settled = true;
+          reject(wrapped);
+          return;
+        }
+
+        this.wsOnError(wrapped);
+      };
+
+      socket.onclose = (event) => {
+        if (this.ws === socket) {
+          this.ws = null;
+        }
+
+        this.emit("websocket_close", {
+          code: event?.code,
+          reason: event?.reason,
+        });
+
+        if (!settled) {
+          settled = true;
+          reject(
+            new VaultError(
+              "[Vault SDK] 'connectToWebsocket': WebSocket closed before the connection was established.",
+              { code: "WEBSOCKET_CLOSED", operation: "connectToWebsocket" }
+            )
+          );
+        }
       };
     });
   }
@@ -352,14 +402,7 @@ class Vault extends EventEmitter {
    * Internal: Build the bot chat WebSocket URL.
    * @private
    */
-  getBotChatWebSocketUrl(token, overrideUrl) {
-    validator.validate(
-      {
-        token: { value: token, type: "string" },
-      },
-      "getBotChatWebSocketUrl"
-    );
-
+  getBotChatWebSocketUrl(overrideUrl) {
     const base = overrideUrl || this.wsUrl || this.baseUrl;
     if (!base) {
       throw new VaultError(
@@ -388,7 +431,6 @@ class Vault extends EventEmitter {
       url.protocol = "ws:";
     }
 
-    url.searchParams.set("token", token);
     return url.toString();
   }
 
@@ -529,11 +571,14 @@ class Vault extends EventEmitter {
       this.botChatWs.close();
     }
 
-    const socketUrl = this.getBotChatWebSocketUrl(accessToken, wsUrl);
+    const socketUrl = this.getBotChatWebSocketUrl(wsUrl);
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      const socket = new WebSocket(socketUrl);
+      const socket = new WebSocket(socketUrl, [
+        WS_CHAT_PROTOCOL,
+        `vault-token.${accessToken}`,
+      ]);
       this.botChatWs = socket;
 
       socket.onopen = () => {
@@ -545,7 +590,6 @@ class Vault extends EventEmitter {
 
         settled = true;
         resolve({
-          token: accessToken,
           url: socketUrl,
           botId: botId || null,
           sessionId: sessionId || null,
