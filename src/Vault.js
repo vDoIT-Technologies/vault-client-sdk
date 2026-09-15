@@ -2,7 +2,12 @@ import crypto from "crypto";
 import axios from "axios";
 import WebSocket from "ws";
 import EventEmitter from "events";
-import { validator, VaultError, HTTP_ERROR_MAP } from "./utils/validationError.js";
+import {
+  validator,
+  ValidationError,
+  VaultError,
+  HTTP_ERROR_MAP,
+} from "./utils/validationError.js";
 import { sanitizeFileName } from "./utils/sanitizeFileName.js";
 import {
   MAX_FILE_SIZE,
@@ -408,6 +413,32 @@ class Vault extends EventEmitter {
       "createVaultLaunchToken"
     );
 
+    if (options.returnTo !== undefined && options.returnTo !== null) {
+      if (typeof options.returnTo !== "string" || !options.returnTo.trim()) {
+        throw new ValidationError(
+          "createVaultLaunchToken",
+          "options.returnTo",
+          "string",
+          "[Vault SDK] 'createVaultLaunchToken': options.returnTo must be a non-empty string when provided."
+        );
+      }
+
+      const returnTo = options.returnTo.trim();
+      if (
+        returnTo.startsWith("//") ||
+        returnTo.startsWith("/\\") ||
+        (!returnTo.startsWith("/") &&
+          !/^https?:\/\//i.test(returnTo))
+      ) {
+        throw new ValidationError(
+          "createVaultLaunchToken",
+          "options.returnTo",
+          "safe URL",
+          "[Vault SDK] 'createVaultLaunchToken': options.returnTo must be an internal path or an http(s) URL allowed by the Vault server."
+        );
+      }
+    }
+
     const payload = { vaultId };
     for (const key of ["returnTo", "clientId", "adminId", "sourceUserId"]) {
       if (typeof options[key] === "string" && options[key].trim()) {
@@ -440,7 +471,7 @@ class Vault extends EventEmitter {
 
     const response = await this.request(
       "POST",
-      "/v1/auth/launch/redeem",
+      "/v1/vault-sdk/launch/redeem",
       { token: launchToken.trim() },
       { operation: "redeemVaultLaunchToken" }
     );
