@@ -465,13 +465,28 @@ class Vault extends EventEmitter {
         );
       }
 
+      // Browsers drop tabs and newlines while parsing a URL, so a path that
+      // hides them can turn into "//evil.com". Paths must resolve back to the
+      // same origin; anything else must be a plain http(s) URL.
       const returnTo = options.returnTo.trim();
-      if (
-        returnTo.startsWith("//") ||
-        returnTo.startsWith("/\\") ||
-        (!returnTo.startsWith("/") &&
-          !/^https?:\/\//i.test(returnTo))
-      ) {
+      const hasUnsafeChar = Array.from(returnTo).some((char) => {
+        const code = char.charCodeAt(0);
+        return code < 32 || code === 127 || code === 92;
+      });
+      const lowered = returnTo.toLowerCase();
+      let isSafe = false;
+      if (!hasUnsafeChar) {
+        try {
+          const base = "https://vault.invalid";
+          isSafe = returnTo.startsWith("/")
+            ? new URL(returnTo, base).origin === base
+            : (lowered.startsWith("http://") || lowered.startsWith("https://")) &&
+              Boolean(new URL(returnTo));
+        } catch {
+          isSafe = false;
+        }
+      }
+      if (!isSafe) {
         throw new ValidationError(
           "createVaultLaunchToken",
           "options.returnTo",
