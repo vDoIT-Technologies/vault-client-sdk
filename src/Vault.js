@@ -871,7 +871,8 @@ class Vault extends EventEmitter {
    * Send a chat message to the currently joined bot.
    *
    * @param {string} message - User message content
-   * @param {Array<{role: string, content: string}>} [history] - Optional recent message history
+   * @param {Array<{role: string, content: string}>} [history] - Ignored. The server
+   *   rebuilds the conversation from the stored session; kept so existing calls still work.
    */
   sendBotChatMessage(message, history = []) {
     validator.validate(
@@ -896,25 +897,15 @@ class Vault extends EventEmitter {
       );
     }
 
-    const normalizedHistory = Array.isArray(history)
-      ? history
-          .filter(
-            (entry) =>
-              entry &&
-              (entry.role === "user" || entry.role === "assistant") &&
-              typeof entry.content === "string" &&
-              entry.content.trim()
-          )
-          .map((entry) => ({
-            role: entry.role,
-            content: entry.content.trim(),
-          }))
-      : [];
+    if (history.length && !this.warnedHistoryIgnored) {
+      this.warnedHistoryIgnored = true;
+      console.warn(
+        "[Vault SDK] 'sendBotChatMessage': the history argument is ignored. " +
+          "The server rebuilds the conversation from the stored session."
+      );
+    }
 
-    this.sendBotChatEvent("send_message", {
-      message: trimmedMessage,
-      history: normalizedHistory,
-    });
+    this.sendBotChatEvent("send_message", { message: trimmedMessage });
   }
 
   /**

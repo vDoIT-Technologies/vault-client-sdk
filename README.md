@@ -410,7 +410,7 @@ Available helpers:
 | Method | Purpose |
 | --- | --- |
 | `joinBotChat(botId, sessionId?)` | Join or resume a bot chat |
-| `sendBotChatMessage(message, history?)` | Send a message to the joined bot |
+| `sendBotChatMessage(message)` | Send a message to the joined bot. The server rebuilds the conversation from the stored session, so a `history` argument is accepted but ignored |
 | `sendBotChatTyping()` | Emit typing state |
 | `disconnectBotChat()` | Close the bot chat socket |
 
