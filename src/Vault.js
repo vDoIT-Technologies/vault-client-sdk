@@ -2,7 +2,13 @@ import crypto from "crypto";
 import axios from "axios";
 import WebSocket from "ws";
 import EventEmitter from "events";
-import { validator, VaultError, HTTP_ERROR_MAP } from "./utils/validationError.js";
+import {
+  validator,
+  ValidationError,
+  VaultError,
+  HTTP_ERROR_MAP,
+  safeErrorDetails,
+} from "./utils/validationError.js";
 import { sanitizeFileName } from "./utils/sanitizeFileName.js";
 import {
   MAX_FILE_SIZE,
@@ -11,6 +17,58 @@ import {
   formatFileSize,
   resolveFile,
 } from "./utils/file.js";
+
+const WS_CHAT_PROTOCOL = "vault-chat";
+
+/** Storage hosts the presign step is allowed to point uploads at. */
+const DEFAULT_UPLOAD_HOSTS = ["s3.filebase.com", ".s3.filebase.com"];
+
+const MAX_PAGE_SIZE = 100;
+
+const DEFAULT_REQUEST_TIMEOUT = 30000;
+const DEFAULT_UPLOAD_CONCURRENCY = 3;
+const MAX_UPLOAD_CONCURRENCY = 10;
+
+/** Slowest upload we still wait for, used to derive a per-file timeout. */
+const ASSUMED_UPLOAD_BYTES_PER_SECOND = 100 * 1024;
+const MIN_UPLOAD_TIMEOUT = 60000;
+const MAX_UPLOAD_TIMEOUT = 2 * 60 * 60 * 1000;
+
+const isLocalHostname = (hostname) =>
+  ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname);
+
+const isEncryptedProtocol = (protocol) =>
+  protocol === "https:" || protocol === "wss:";
+
+const REDACTED = "[redacted]";
+
+/** Run `worker` over `items`, at most `limit` at a time, keeping input order. */
+async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  const runners = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    async () => {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        results[index] = await worker(items[index], index);
+      }
+    }
+  );
+
+  await Promise.all(runners);
+  return results;
+}
+
+const toBase64Url = (text) => {
+  const base64 =
+    typeof Buffer !== "undefined"
+      ? Buffer.from(text, "utf8").toString("base64")
+      : btoa(unescape(encodeURIComponent(text)));
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
 
 class Vault extends EventEmitter {
   /**
@@ -22,6 +80,12 @@ class Vault extends EventEmitter {
    * @param {string} config.VAULT_CLIENT_API_KEY - Your client-specific API key
    * @param {string} config.VAULT_BASE_URL - Base URL of the Vault API (e.g. "https://api.example.com")
    * @param {string} [config.VAULT_WS_URL] - WebSocket URL for real-time events (e.g. "wss://api.example.com/ws")
+   * @param {boolean} [config.VAULT_ALLOW_INSECURE=false] - Allow http:// / ws:// to a non-local host (test servers only)
+   * @param {string} [config.VAULT_UPLOAD_ROOT] - Directory that file paths must stay inside (defaults to the working directory)
+   * @param {string|string[]} [config.VAULT_UPLOAD_HOSTS] - Extra storage hosts uploads may be sent to
+   * @param {number} [config.VAULT_TIMEOUT=30000] - Timeout in ms for API requests
+   * @param {number} [config.VAULT_UPLOAD_TIMEOUT] - Timeout in ms for one file upload (default: scaled to the file size)
+   * @param {number} [config.VAULT_UPLOAD_CONCURRENCY=3] - How many files upload at once in uploadFiles/uploadFilesToBot
    *
    * @throws {VaultError} If any required configuration parameter is missing
    *
@@ -40,6 +104,12 @@ class Vault extends EventEmitter {
     VAULT_CLIENT_API_KEY,
     VAULT_BASE_URL,
     VAULT_WS_URL,
+    VAULT_ALLOW_INSECURE,
+    VAULT_UPLOAD_ROOT,
+    VAULT_UPLOAD_HOSTS,
+    VAULT_TIMEOUT,
+    VAULT_UPLOAD_TIMEOUT,
+    VAULT_UPLOAD_CONCURRENCY,
   } = {}) {
     super();
 
@@ -57,20 +127,85 @@ class Vault extends EventEmitter {
       );
     }
 
-    this.apiKey = VAULT_ACCESS_KEY;
-    this.apiSecret = VAULT_SECRET_KEY;
-    this.clientApiKey = VAULT_CLIENT_API_KEY;
+    // Hidden from enumeration so console.log(vault), JSON.stringify and APM
+    // snapshots cannot print the signing secret.
+    for (const [property, secret] of [
+      ["apiKey", VAULT_ACCESS_KEY],
+      ["apiSecret", VAULT_SECRET_KEY],
+      ["clientApiKey", VAULT_CLIENT_API_KEY],
+    ]) {
+      Object.defineProperty(this, property, {
+        value: secret,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+
     this.baseUrl = VAULT_BASE_URL;
     this.wsUrl = VAULT_WS_URL;
     this.ws = null;
     this.botChatWs = null;
 
-    this.httpClient = axios.create({
-      baseURL: this.baseUrl,
-      headers: {
-        "Content-Type": "application/json",
-        "API-Key": this.apiKey,
-      },
+    this.allowInsecure = VAULT_ALLOW_INSECURE === true;
+
+    this._assertEncryptedTransport(
+      this.normalizeAbsoluteUrl(this.baseUrl),
+      "VAULT_BASE_URL",
+      "constructor"
+    );
+    if (this.wsUrl) {
+      this._assertEncryptedTransport(
+        this.normalizeAbsoluteUrl(this.wsUrl, "wss:"),
+        "VAULT_WS_URL",
+        "constructor"
+      );
+    }
+
+    this.uploadRoot = VAULT_UPLOAD_ROOT || undefined;
+
+    const positive = (value, fallback) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number > 0 ? number : fallback;
+    };
+
+    this.requestTimeout = positive(VAULT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT);
+    this.uploadTimeout = positive(VAULT_UPLOAD_TIMEOUT, undefined);
+    this.uploadConcurrency = Math.min(
+      positive(VAULT_UPLOAD_CONCURRENCY, DEFAULT_UPLOAD_CONCURRENCY),
+      MAX_UPLOAD_CONCURRENCY
+    );
+
+    // Uploads may only go to storage hosts we expect, so a tampered presign
+    // response cannot redirect a file to someone else's server.
+    const extraHosts = Array.isArray(VAULT_UPLOAD_HOSTS)
+      ? VAULT_UPLOAD_HOSTS
+      : String(VAULT_UPLOAD_HOSTS || "")
+          .split(",")
+          .filter(Boolean);
+    this.allowedUploadHosts = [
+      ...DEFAULT_UPLOAD_HOSTS,
+      ...extraHosts.map((host) => String(host).trim().toLowerCase()),
+    ];
+    try {
+      this.allowedUploadHosts.push(new URL(this.baseUrl).hostname.toLowerCase());
+    } catch {
+      // A base URL that will not parse fails on the first request instead.
+    }
+
+    // Not enumerable either: its default headers carry the access key.
+    Object.defineProperty(this, "httpClient", {
+      value: axios.create({
+        baseURL: this.baseUrl,
+        timeout: this.requestTimeout,
+        headers: {
+          "Content-Type": "application/json",
+          "API-Key": this.apiKey,
+        },
+      }),
+      enumerable: false,
+      writable: true,
+      configurable: true,
     });
   }
 
@@ -121,13 +256,26 @@ class Vault extends EventEmitter {
           ? `[Vault SDK] ${operation}: ${serverMessage}`
           : `[Vault SDK] ${operation}: ${errorInfo.description}`;
 
+        const details = safeErrorDetails(data);
+        const requestId =
+          details?.requestId || error.response.headers?.["x-request-id"] || null;
+
         throw new VaultError(message, {
           status,
           code: errorInfo.code,
           operation,
-          data,
+          data: details,
+          requestId,
         });
       } else if (error.request) {
+        if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
+          throw new VaultError(
+            `[Vault SDK] ${operation}: The request timed out after ${this.requestTimeout}ms. ` +
+              `Raise VAULT_TIMEOUT if your network needs longer.`,
+            { code: "REQUEST_TIMEOUT", operation }
+          );
+        }
+
         throw new VaultError(
           `[Vault SDK] ${operation}: No response received from the server. ` +
             `Please check your network connection and ensure VAULT_BASE_URL ("${this.baseUrl}") is correct.`,
@@ -246,31 +394,71 @@ class Vault extends EventEmitter {
       );
     }
 
+    if (this.ws && this.ws.readyState < WebSocket.CLOSING) {
+      this.ws.close();
+    }
+
     const timestamp = Date.now().toString();
-    const wsUrl = new URL(this.wsUrl);
-    const signature = this.signLegacy(timestamp);
+    const credentials = toBase64Url(
+      JSON.stringify({
+        apikey: this.apiKey,
+        signature: this.signLegacy(timestamp),
+        timestamp,
+        clientApiKey: this.clientApiKey,
+      })
+    );
 
     return new Promise((resolve, reject) => {
-      wsUrl.searchParams.set("apikey", this.apiKey);
-      wsUrl.searchParams.set("signature", signature);
-      wsUrl.searchParams.set("timestamp", timestamp);
-      wsUrl.searchParams.set("clientApiKey", this.clientApiKey);
-      this.ws = new WebSocket(wsUrl.toString());
+      let settled = false;
+      // Credentials travel in the handshake, not the URL, so proxies and access
+      // logs never record them.
+      const socket = new WebSocket(new URL(this.wsUrl).toString(), [
+        WS_CHAT_PROTOCOL,
+        `vault-auth.${credentials}`,
+      ]);
+      this.ws = socket;
 
-      this.ws.onopen = () => {
+      socket.onopen = () => {
+        settled = true;
         resolve();
       };
 
-      this.ws.onmessage = this.wsOnMessage.bind(this);
-      this.ws.onclose = () => {};
+      socket.onmessage = this.wsOnMessage.bind(this);
 
-      this.ws.onerror = (error) => {
-        reject(
-          new VaultError(
-            `[Vault SDK] 'connectToWebsocket': WebSocket connection failed — ${error.message || "Unknown error"}`,
-            { code: "WEBSOCKET_ERROR", operation: "connectToWebsocket" }
-          )
+      socket.onerror = (error) => {
+        const wrapped = new VaultError(
+          `[Vault SDK] 'connectToWebsocket': WebSocket connection failed — ${error.message || "Unknown error"}`,
+          { code: "WEBSOCKET_ERROR", operation: "connectToWebsocket" }
         );
+
+        if (!settled) {
+          settled = true;
+          reject(wrapped);
+          return;
+        }
+
+        this.wsOnError(wrapped);
+      };
+
+      socket.onclose = (event) => {
+        if (this.ws === socket) {
+          this.ws = null;
+        }
+
+        this.emit("websocket_close", {
+          code: event?.code,
+          reason: event?.reason,
+        });
+
+        if (!settled) {
+          settled = true;
+          reject(
+            new VaultError(
+              "[Vault SDK] 'connectToWebsocket': WebSocket closed before the connection was established.",
+              { code: "WEBSOCKET_CLOSED", operation: "connectToWebsocket" }
+            )
+          );
+        }
       };
     });
   }
@@ -317,7 +505,7 @@ class Vault extends EventEmitter {
    * Accepts http(s), ws(s), protocol-relative, root-relative, and bare host forms.
    * @private
    */
-  normalizeAbsoluteUrl(rawUrl, fallbackProtocol = "http:") {
+  normalizeAbsoluteUrl(rawUrl, fallbackProtocol = "https:") {
     const value = typeof rawUrl === "string" ? rawUrl.trim() : "";
     if (!value) {
       throw new VaultError(
@@ -352,14 +540,7 @@ class Vault extends EventEmitter {
    * Internal: Build the bot chat WebSocket URL.
    * @private
    */
-  getBotChatWebSocketUrl(token, overrideUrl) {
-    validator.validate(
-      {
-        token: { value: token, type: "string" },
-      },
-      "getBotChatWebSocketUrl"
-    );
-
+  getBotChatWebSocketUrl(overrideUrl) {
     const base = overrideUrl || this.wsUrl || this.baseUrl;
     if (!base) {
       throw new VaultError(
@@ -370,7 +551,7 @@ class Vault extends EventEmitter {
 
     const normalizedBase = this.normalizeAbsoluteUrl(
       base,
-      typeof base === "string" && base.trim().startsWith("ws") ? "ws:" : "http:"
+      typeof base === "string" && base.trim().startsWith("ws") ? "wss:" : "https:"
     );
 
     const url = new URL(normalizedBase.toString());
@@ -385,10 +566,11 @@ class Vault extends EventEmitter {
     } else if (url.protocol === "http:") {
       url.protocol = "ws:";
     } else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
-      url.protocol = "ws:";
+      url.protocol = "wss:";
     }
 
-    url.searchParams.set("token", token);
+    this._assertEncryptedTransport(url, "The bot chat WebSocket URL", "connectToBotChat");
+
     return url.toString();
   }
 
@@ -407,6 +589,47 @@ class Vault extends EventEmitter {
       },
       "createVaultLaunchToken"
     );
+
+    if (options.returnTo !== undefined && options.returnTo !== null) {
+      if (typeof options.returnTo !== "string" || !options.returnTo.trim()) {
+        throw new ValidationError(
+          "createVaultLaunchToken",
+          "options.returnTo",
+          "string",
+          "[Vault SDK] 'createVaultLaunchToken': options.returnTo must be a non-empty string when provided."
+        );
+      }
+
+      // Browsers drop tabs and newlines while parsing a URL, so a path that
+      // hides them can turn into "//evil.com". Paths must resolve back to the
+      // same origin; anything else must be a plain http(s) URL.
+      const returnTo = options.returnTo.trim();
+      const hasUnsafeChar = Array.from(returnTo).some((char) => {
+        const code = char.charCodeAt(0);
+        return code < 32 || code === 127 || code === 92;
+      });
+      const lowered = returnTo.toLowerCase();
+      let isSafe = false;
+      if (!hasUnsafeChar) {
+        try {
+          const base = "https://vault.invalid";
+          isSafe = returnTo.startsWith("/")
+            ? new URL(returnTo, base).origin === base
+            : (lowered.startsWith("http://") || lowered.startsWith("https://")) &&
+              Boolean(new URL(returnTo));
+        } catch {
+          isSafe = false;
+        }
+      }
+      if (!isSafe) {
+        throw new ValidationError(
+          "createVaultLaunchToken",
+          "options.returnTo",
+          "safe URL",
+          "[Vault SDK] 'createVaultLaunchToken': options.returnTo must be an internal path or an http(s) URL allowed by the Vault server."
+        );
+      }
+    }
 
     const payload = { vaultId };
     for (const key of ["returnTo", "clientId", "adminId", "sourceUserId"]) {
@@ -440,7 +663,7 @@ class Vault extends EventEmitter {
 
     const response = await this.request(
       "POST",
-      "/v1/auth/launch/redeem",
+      "/v1/vault-sdk/launch/redeem",
       { token: launchToken.trim() },
       { operation: "redeemVaultLaunchToken" }
     );
@@ -529,11 +752,14 @@ class Vault extends EventEmitter {
       this.botChatWs.close();
     }
 
-    const socketUrl = this.getBotChatWebSocketUrl(accessToken, wsUrl);
+    const socketUrl = this.getBotChatWebSocketUrl(wsUrl);
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      const socket = new WebSocket(socketUrl);
+      const socket = new WebSocket(socketUrl, [
+        WS_CHAT_PROTOCOL,
+        `vault-token.${accessToken}`,
+      ]);
       this.botChatWs = socket;
 
       socket.onopen = () => {
@@ -545,7 +771,6 @@ class Vault extends EventEmitter {
 
         settled = true;
         resolve({
-          token: accessToken,
           url: socketUrl,
           botId: botId || null,
           sessionId: sessionId || null,
@@ -654,7 +879,8 @@ class Vault extends EventEmitter {
    * Send a chat message to the currently joined bot.
    *
    * @param {string} message - User message content
-   * @param {Array<{role: string, content: string}>} [history] - Optional recent message history
+   * @param {Array<{role: string, content: string}>} [history] - Ignored. The server
+   *   rebuilds the conversation from the stored session; kept so existing calls still work.
    */
   sendBotChatMessage(message, history = []) {
     validator.validate(
@@ -679,25 +905,15 @@ class Vault extends EventEmitter {
       );
     }
 
-    const normalizedHistory = Array.isArray(history)
-      ? history
-          .filter(
-            (entry) =>
-              entry &&
-              (entry.role === "user" || entry.role === "assistant") &&
-              typeof entry.content === "string" &&
-              entry.content.trim()
-          )
-          .map((entry) => ({
-            role: entry.role,
-            content: entry.content.trim(),
-          }))
-      : [];
+    if (history.length && !this.warnedHistoryIgnored) {
+      this.warnedHistoryIgnored = true;
+      console.warn(
+        "[Vault SDK] 'sendBotChatMessage': the history argument is ignored. " +
+          "The server rebuilds the conversation from the stored session."
+      );
+    }
 
-    this.sendBotChatEvent("send_message", {
-      message: trimmedMessage,
-      history: normalizedHistory,
-    });
+    this.sendBotChatEvent("send_message", { message: trimmedMessage });
   }
 
   /**
@@ -738,6 +954,136 @@ class Vault extends EventEmitter {
    * @throws {VaultError} If the file is unreadable, invalid, or the upload fails at any step
    * @throws {ValidationError} If required parameters are missing/invalid
    */
+  /**
+   * Internal: turn a caller-supplied page number or page size into a usable
+   * integer, rejecting values that are not numbers and clamping the rest.
+   *
+   * @param {*} value - Raw value from the caller
+   * @param {string} field - Field name, used in the message
+   * @param {string} operation - Calling method name
+   * @param {number} max - Largest value allowed
+   * @returns {number} An integer between 1 and max
+   * @throws {ValidationError} If the value is not a number
+   */
+  _pagingValue(value, field, operation, max) {
+    const numeric =
+      typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+
+    if (typeof numeric !== "number" || !Number.isFinite(numeric)) {
+      throw new ValidationError(
+        operation,
+        field,
+        "number",
+        `[Vault SDK] '${operation}': '${field}' must be a number. Received: ${typeof value}.`
+      );
+    }
+
+    return Math.min(Math.max(Math.trunc(numeric), 1), max);
+  }
+
+  /**
+   * Internal: refuse a URL that would carry credentials in the clear.
+   *
+   * @param {URL} parsed - The URL to check
+   * @param {string} label - What the URL is, used in the message
+   * @param {string} operation - Calling method name
+   * @returns {URL} The same URL, when it is acceptable
+   * @throws {VaultError} If the URL is unencrypted, non-local and not explicitly allowed
+   */
+  _assertEncryptedTransport(parsed, label, operation) {
+    if (
+      isEncryptedProtocol(parsed.protocol) ||
+      this.allowInsecure ||
+      isLocalHostname(parsed.hostname.toLowerCase())
+    ) {
+      return parsed;
+    }
+
+    throw new VaultError(
+      `[Vault SDK] ${operation}: ${label} uses "${parsed.protocol}//", so API keys, signatures and file contents would travel unencrypted. ` +
+        `Use https:// (or wss://), or set VAULT_ALLOW_INSECURE: true for a local test server.`,
+      { code: "INSECURE_TRANSPORT", operation }
+    );
+  }
+
+  /**
+   * A redacted view of this client, used by JSON.stringify and console.log.
+   *
+   * @returns {Object} Configuration with the secrets replaced
+   */
+  toJSON() {
+    return {
+      baseUrl: this.baseUrl,
+      wsUrl: this.wsUrl,
+      apiKey: REDACTED,
+      apiSecret: REDACTED,
+      clientApiKey: REDACTED,
+    };
+  }
+
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `Vault ${JSON.stringify(this.toJSON())}`;
+  }
+
+  /**
+   * Internal: check a presigned upload URL before sending any bytes to it.
+   *
+   * @param {string} rawUrl - URL returned by the presign step
+   * @param {string} operation - Calling method name
+   * @param {string} fileName - File name, used in error messages
+   * @returns {string} The URL to upload to
+   * @throws {VaultError} If the URL is malformed, not HTTPS, or on an unexpected host
+   */
+  _checkUploadUrl(rawUrl, operation, fileName) {
+    let parsed;
+    try {
+      parsed = new URL(String(rawUrl));
+    } catch {
+      throw new VaultError(
+        `[Vault SDK] '${operation}': The upload URL returned for "${fileName}" is not a valid URL.`,
+        { code: "UPLOAD_URL_REJECTED", operation }
+      );
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+
+    if (parsed.protocol !== "https:" && !isLocalHostname(hostname)) {
+      throw new VaultError(
+        `[Vault SDK] '${operation}': The upload URL returned for "${fileName}" is not HTTPS. ` +
+          `Refusing to send the file over an unencrypted connection.`,
+        { code: "UPLOAD_URL_REJECTED", operation }
+      );
+    }
+
+    const allowed = this.allowedUploadHosts.some((entry) =>
+      entry.startsWith(".") ? hostname.endsWith(entry) : hostname === entry
+    );
+
+    if (!allowed) {
+      throw new VaultError(
+        `[Vault SDK] '${operation}': The server returned an upload URL on an unexpected host ("${hostname}") for "${fileName}". ` +
+          `Add it to VAULT_UPLOAD_HOSTS if your deployment stores files there.`,
+        { code: "UPLOAD_URL_REJECTED", operation }
+      );
+    }
+
+    return parsed.toString();
+  }
+
+  /**
+   * Internal: how long to wait for one upload, scaled to the file size.
+   *
+   * @param {number} bytes - File size in bytes
+   * @returns {number} Timeout in milliseconds
+   */
+  _uploadTimeoutFor(bytes) {
+    if (this.uploadTimeout !== undefined) return this.uploadTimeout;
+
+    const scaled =
+      Math.ceil((Number(bytes) || 0) / ASSUMED_UPLOAD_BYTES_PER_SECOND) * 1000;
+    return Math.min(Math.max(MIN_UPLOAD_TIMEOUT, scaled), MAX_UPLOAD_TIMEOUT);
+  }
+
   async uploadFile(file, vaultId, parentId = null) {
     validator.validate(
       {
@@ -747,7 +1093,9 @@ class Vault extends EventEmitter {
     );
 
     // Read the file and derive everything the upload needs from it.
-    const { buffer, name, type } = await resolveFile(file, "uploadFile");
+    const { buffer, name, type } = await resolveFile(file, "uploadFile", {
+      uploadRoot: this.uploadRoot,
+    });
     const fileSize = buffer.length;
 
     if (fileSize === 0) {
@@ -803,7 +1151,11 @@ class Vault extends EventEmitter {
     if (!url || !key) {
       throw new VaultError(
         `[Vault SDK] 'uploadFile': The server did not return an upload URL for "${fileName}".`,
-        { code: "PRESIGN_FAILED", operation: "uploadFile", data: presign }
+        {
+          code: "PRESIGN_FAILED",
+          operation: "uploadFile",
+          data: safeErrorDetails(presign),
+        }
       );
     }
 
@@ -823,14 +1175,18 @@ class Vault extends EventEmitter {
           "x-amz-meta-file-size": fileSize.toString(),
         };
 
+    const uploadUrl = this._checkUploadUrl(url, "uploadFile", fileName);
+
     try {
-      await axios.put(url, buffer, {
+      await axios.put(uploadUrl, buffer, {
         headers: {
           "Content-Type": contentType || fileType,
           ...metaHeaders,
         },
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
+        maxRedirects: 0,
+        timeout: this._uploadTimeoutFor(fileSize),
       });
     } catch (error) {
       const status = error.response?.status;
@@ -880,7 +1236,9 @@ class Vault extends EventEmitter {
   /**
    * Upload multiple files to the vault in parallel.
    *
-   * Each file is uploaded independently. Failed uploads do not block others.
+   * Files upload a few at a time (VAULT_UPLOAD_CONCURRENCY, 3 by default) and
+   * each one is independent, so a single failure does not block the others.
+   * If every file fails, the call throws instead of returning an all-failed list.
    *
    * @param {Array<string|Object|Blob>} files - Array of files, in any form uploadFile() accepts
    * @param {string} vaultId - The vault ID to upload to
@@ -907,26 +1265,37 @@ class Vault extends EventEmitter {
       "uploadFiles"
     );
 
-    const uploadPromises = files.map(async (file, index) => {
-      const label =
-        baseName(
-          typeof file === "string" ? file : file?.name || file?.path || ""
-        ) || `file[${index}]`;
+    const results = await runWithConcurrency(
+      files,
+      this.uploadConcurrency,
+      async (file, index) => {
+        const label =
+          baseName(
+            typeof file === "string" ? file : file?.name || file?.path || ""
+          ) || `file[${index}]`;
 
-      try {
-        const result = await this.uploadFile(file, vaultId, parentId);
-        return { ...result, status: "success", fileName: label };
-      } catch (error) {
-        return {
-          status: "failed",
-          fileName: label,
-          error: error.message,
-          code: error.code || "UPLOAD_FAILED",
-        };
+        try {
+          const result = await this.uploadFile(file, vaultId, parentId);
+          return { ...result, status: "success", fileName: label };
+        } catch (error) {
+          return {
+            status: "failed",
+            fileName: label,
+            error: error.message,
+            code: error.code || "UPLOAD_FAILED",
+          };
+        }
       }
-    });
+    );
 
-    return await Promise.all(uploadPromises);
+    if (results.length && results.every((result) => result.status === "failed")) {
+      throw new VaultError(
+        `[Vault SDK] 'uploadFiles': All ${results.length} file${results.length === 1 ? "" : "s"} failed to upload.`,
+        { code: "UPLOAD_FAILED", operation: "uploadFiles", data: { results } }
+      );
+    }
+
+    return results;
   }
 
   // ─── File Retrieval ───────────────────────────────────────────
@@ -1234,11 +1603,19 @@ class Vault extends EventEmitter {
 
     const params = new URLSearchParams({ vaultId });
 
-    if (query.page !== undefined) {
-      params.set("page", String(query.page));
+    if (query.page !== undefined && query.page !== null) {
+      params.set(
+        "page",
+        String(
+          this._pagingValue(query.page, "page", "getTransactionHistory", Number.MAX_SAFE_INTEGER)
+        )
+      );
     }
-    if (query.limit !== undefined) {
-      params.set("limit", String(query.limit));
+    if (query.limit !== undefined && query.limit !== null) {
+      params.set(
+        "limit",
+        String(this._pagingValue(query.limit, "limit", "getTransactionHistory", MAX_PAGE_SIZE))
+      );
     }
     if (typeof query.category === "string" && query.category.trim()) {
       params.set("category", query.category.trim());
@@ -1604,24 +1981,28 @@ class Vault extends EventEmitter {
         vaultId: { value: vaultId, type: "string" },
         botId: { value: botId, type: "string" },
         updates: { value: updates, type: "object" },
-        name: { value: updates?.name, type: "string", required: false },
-        description: { value: updates?.description, type: "string", required: false },
-        profession: { value: updates?.profession, type: "string", required: false },
-        useLLMFallback: { value: updates?.useLLMFallback, type: "boolean", required: false },
-        wordLimit: { value: updates?.wordLimit, type: "number", required: false },
+        name: { value: updates?.name, type: "string", required: false, rejectNull: true },
+        description: { value: updates?.description, type: "string", required: false, rejectNull: true },
+        profession: { value: updates?.profession, type: "string", required: false, rejectNull: true },
+        useLLMFallback: { value: updates?.useLLMFallback, type: "boolean", required: false, rejectNull: true },
+        wordLimit: { value: updates?.wordLimit, type: "integer", required: false, rejectNull: true },
       },
       "updateBot"
     );
 
     const payload = { vaultId };
 
-    if (updates?.name !== undefined) payload.name = updates.name.trim();
-    if (updates?.description !== undefined) payload.description = updates.description;
-    if (updates?.profession !== undefined) payload.profession = updates.profession;
-    if (updates?.useLLMFallback !== undefined) {
+    if (typeof updates?.name === "string") payload.name = updates.name.trim();
+    if (typeof updates?.description === "string") {
+      payload.description = updates.description;
+    }
+    if (typeof updates?.profession === "string") {
+      payload.profession = updates.profession;
+    }
+    if (typeof updates?.useLLMFallback === "boolean") {
       payload.useLLMFallback = updates.useLLMFallback;
     }
-    if (updates?.wordLimit !== undefined) payload.wordLimit = updates.wordLimit;
+    if (typeof updates?.wordLimit === "number") payload.wordLimit = updates.wordLimit;
 
     const response = await this.request(
       "PATCH",
@@ -1825,7 +2206,9 @@ class Vault extends EventEmitter {
    * @private
    */
   async uploadSingleFileToBot(file, vaultId, botId) {
-    const resolved = await resolveFile(file, "uploadFilesToBot");
+    const resolved = await resolveFile(file, "uploadFilesToBot", {
+      uploadRoot: this.uploadRoot,
+    });
     const fileSize = resolved.buffer.length;
 
     if (fileSize > MAX_FILE_SIZE) {
@@ -1871,7 +2254,11 @@ class Vault extends EventEmitter {
     if (!url || !key) {
       throw new VaultError(
         `[Vault SDK] 'uploadFilesToBot': The server did not return an upload URL for "${fileName}".`,
-        { code: "PRESIGN_FAILED", operation: "uploadFilesToBot", data: presign }
+        {
+          code: "PRESIGN_FAILED",
+          operation: "uploadFilesToBot",
+          data: safeErrorDetails(presign),
+        }
       );
     }
 
@@ -1889,14 +2276,18 @@ class Vault extends EventEmitter {
           "x-amz-meta-file-size": fileSize.toString(),
         };
 
+    const uploadUrl = this._checkUploadUrl(url, "uploadFilesToBot", fileName);
+
     try {
-      await axios.put(url, resolved.buffer, {
+      await axios.put(uploadUrl, resolved.buffer, {
         headers: {
           "Content-Type": contentType || fileType,
           ...metaHeaders,
         },
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
+        maxRedirects: 0,
+        timeout: this._uploadTimeoutFor(fileSize),
       });
     } catch (error) {
       const status = error.response?.status;
@@ -2364,8 +2755,10 @@ class Vault extends EventEmitter {
       );
     }
 
-    const results = await Promise.all(
-      normalizedFiles.map(async (file, index) => {
+    const results = await runWithConcurrency(
+      normalizedFiles,
+      this.uploadConcurrency,
+      async (file, index) => {
         const label =
           baseName(
             typeof file === "string" ? file : file?.name || file?.path || ""
@@ -2382,7 +2775,7 @@ class Vault extends EventEmitter {
             code: error.code || "UPLOAD_FAILED",
           };
         }
-      })
+      }
     );
 
     const successful = results.filter((result) => result.status === "success");
