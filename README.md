@@ -501,6 +501,8 @@ const wallet = await vault.getWalletInfo("your-vault-id");
 
 Get paginated wallet transaction history. You can optionally filter by page, limit, and category.
 
+`page` and `limit` must be numbers; anything else is rejected with `INVALID_PARAMETER`. Both are rounded down to whole numbers, `page` starts at 1, and `limit` is clamped to 1-100.
+
 ```javascript
 const history = await vault.getTransactionHistory("your-vault-id");
 

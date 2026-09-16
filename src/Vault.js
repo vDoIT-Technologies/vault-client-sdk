@@ -22,6 +22,8 @@ const WS_CHAT_PROTOCOL = "vault-chat";
 /** Storage hosts the presign step is allowed to point uploads at. */
 const DEFAULT_UPLOAD_HOSTS = ["s3.filebase.com", ".s3.filebase.com"];
 
+const MAX_PAGE_SIZE = 100;
+
 const DEFAULT_REQUEST_TIMEOUT = 30000;
 const DEFAULT_UPLOAD_CONCURRENCY = 3;
 const MAX_UPLOAD_CONCURRENCY = 10;
@@ -947,6 +949,33 @@ class Vault extends EventEmitter {
    * @throws {ValidationError} If required parameters are missing/invalid
    */
   /**
+   * Internal: turn a caller-supplied page number or page size into a usable
+   * integer, rejecting values that are not numbers and clamping the rest.
+   *
+   * @param {*} value - Raw value from the caller
+   * @param {string} field - Field name, used in the message
+   * @param {string} operation - Calling method name
+   * @param {number} max - Largest value allowed
+   * @returns {number} An integer between 1 and max
+   * @throws {ValidationError} If the value is not a number
+   */
+  _pagingValue(value, field, operation, max) {
+    const numeric =
+      typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+
+    if (typeof numeric !== "number" || !Number.isFinite(numeric)) {
+      throw new ValidationError(
+        operation,
+        field,
+        "number",
+        `[Vault SDK] '${operation}': '${field}' must be a number. Received: ${typeof value}.`
+      );
+    }
+
+    return Math.min(Math.max(Math.trunc(numeric), 1), max);
+  }
+
+  /**
    * Internal: refuse a URL that would carry credentials in the clear.
    *
    * @param {URL} parsed - The URL to check
@@ -1564,11 +1593,19 @@ class Vault extends EventEmitter {
 
     const params = new URLSearchParams({ vaultId });
 
-    if (query.page !== undefined) {
-      params.set("page", String(query.page));
+    if (query.page !== undefined && query.page !== null) {
+      params.set(
+        "page",
+        String(
+          this._pagingValue(query.page, "page", "getTransactionHistory", Number.MAX_SAFE_INTEGER)
+        )
+      );
     }
-    if (query.limit !== undefined) {
-      params.set("limit", String(query.limit));
+    if (query.limit !== undefined && query.limit !== null) {
+      params.set(
+        "limit",
+        String(this._pagingValue(query.limit, "limit", "getTransactionHistory", MAX_PAGE_SIZE))
+      );
     }
     if (typeof query.category === "string" && query.category.trim()) {
       params.set("category", query.category.trim());
@@ -1934,24 +1971,28 @@ class Vault extends EventEmitter {
         vaultId: { value: vaultId, type: "string" },
         botId: { value: botId, type: "string" },
         updates: { value: updates, type: "object" },
-        name: { value: updates?.name, type: "string", required: false },
-        description: { value: updates?.description, type: "string", required: false },
-        profession: { value: updates?.profession, type: "string", required: false },
-        useLLMFallback: { value: updates?.useLLMFallback, type: "boolean", required: false },
-        wordLimit: { value: updates?.wordLimit, type: "number", required: false },
+        name: { value: updates?.name, type: "string", required: false, rejectNull: true },
+        description: { value: updates?.description, type: "string", required: false, rejectNull: true },
+        profession: { value: updates?.profession, type: "string", required: false, rejectNull: true },
+        useLLMFallback: { value: updates?.useLLMFallback, type: "boolean", required: false, rejectNull: true },
+        wordLimit: { value: updates?.wordLimit, type: "integer", required: false, rejectNull: true },
       },
       "updateBot"
     );
 
     const payload = { vaultId };
 
-    if (updates?.name !== undefined) payload.name = updates.name.trim();
-    if (updates?.description !== undefined) payload.description = updates.description;
-    if (updates?.profession !== undefined) payload.profession = updates.profession;
-    if (updates?.useLLMFallback !== undefined) {
+    if (typeof updates?.name === "string") payload.name = updates.name.trim();
+    if (typeof updates?.description === "string") {
+      payload.description = updates.description;
+    }
+    if (typeof updates?.profession === "string") {
+      payload.profession = updates.profession;
+    }
+    if (typeof updates?.useLLMFallback === "boolean") {
       payload.useLLMFallback = updates.useLLMFallback;
     }
-    if (updates?.wordLimit !== undefined) payload.wordLimit = updates.wordLimit;
+    if (typeof updates?.wordLimit === "number") payload.wordLimit = updates.wordLimit;
 
     const response = await this.request(
       "PATCH",

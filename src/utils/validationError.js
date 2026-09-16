@@ -56,7 +56,8 @@ export const validator = {
     string: (value) => typeof value === "string" && value.trim() !== "",
     object: (value) => typeof value === "object" && value !== null,
     array: (value) => Array.isArray(value) && value.length > 0,
-    number: (value) => typeof value === "number" && !isNaN(value) && value >= 0,
+    number: (value) => Number.isFinite(value) && value >= 0,
+    integer: (value) => Number.isInteger(value) && value >= 0,
     boolean: (value) => typeof value === "boolean",
     function: (value) => typeof value === "function",
     buffer: (value) => Buffer.isBuffer(value) || (value instanceof Uint8Array),
@@ -71,7 +72,17 @@ export const validator = {
     }
 
     Object.entries(params).forEach(([param, config]) => {
-      const { value, type, required = true, custom, message } = config;
+      const { value, type, required = true, custom, message, rejectNull } = config;
+
+      if (value === null && rejectNull) {
+        throw new ValidationError(
+          operation,
+          param,
+          type,
+          message ||
+            `[Vault SDK] '${operation}': Parameter '${param}' must be a valid ${type}, or be left out entirely. Received: null.`
+        );
+      }
 
       if ((value === undefined || value === null) && !required) {
         return;
