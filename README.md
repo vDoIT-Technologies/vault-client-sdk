@@ -22,7 +22,17 @@ const vault = new Vault({
 });
 ```
 
-All configuration parameters except `VAULT_WS_URL` are required. The SDK will throw a clear error listing any missing ones.
+Only the first four are required. The SDK will throw a clear error listing any missing ones.
+
+These optional settings control uploads:
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `VAULT_UPLOAD_ROOT` | the working directory | Paths passed to `uploadFile()` must resolve inside this directory |
+| `VAULT_UPLOAD_HOSTS` | Filebase storage + your API host | Extra hosts the SDK may upload files to |
+| `VAULT_TIMEOUT` | `30000` | Timeout in ms for API requests |
+| `VAULT_UPLOAD_TIMEOUT` | scaled to the file size | Timeout in ms for one file upload |
+| `VAULT_UPLOAD_CONCURRENCY` | `3` | How many files upload at once in the batch methods |
 
 ## API Reference
 
@@ -48,18 +58,20 @@ const inFolder = await vault.uploadFile(
 
 | Form | Example |
 | --- | --- |
-| Path on disk | `"./photo.jpg"` |
+| Path on disk | `"./photo.jpg"` (must be inside `VAULT_UPLOAD_ROOT`) |
 | Bytes + name | `{ buffer: fileBuffer, name: "report.pdf" }` |
 | Path in an object | `{ path: "./photo.jpg" }` |
 | `File` / `Blob` | `new File([bytes], "photo.jpg", { type: "image/jpeg" })` |
 
 `type` (or `mimeType` / `contentType`) is optional — it's derived from the file extension when omitted. Names are sanitized to ASCII before upload, so `héllo wörld🤣.PNG` is stored as `hello world.PNG`.
 
-The call throws a `VaultError` if the file can't be read, is empty, exceeds the 10 GB limit, or if any upload step fails — the `code` tells you which step (`FILE_READ_FAILED`, `INVALID_PARAMETER`, `FILE_TOO_LARGE`, `PRESIGN_FAILED`, `STORAGE_UPLOAD_FAILED`, `REGISTER_FAILED`).
+The call throws a `VaultError` if the file can't be read, is empty, exceeds the 10 GB limit, or if any upload step fails — the `code` tells you which step (`FILE_READ_FAILED`, `INVALID_PARAMETER`, `FILE_TOO_LARGE`, `PATH_NOT_ALLOWED`, `PRESIGN_FAILED`, `UPLOAD_URL_REJECTED`, `STORAGE_UPLOAD_FAILED`, `REGISTER_FAILED`).
+
+`PATH_NOT_ALLOWED` means the path resolved outside `VAULT_UPLOAD_ROOT`; `UPLOAD_URL_REJECTED` means the server handed back an upload URL that is not HTTPS or not on an allowed storage host, so nothing was sent.
 
 #### `uploadFiles(files, vaultId, parentId?)`
 
-Upload multiple files in parallel. Each file is handled independently — one failure won't block the others. Every entry accepts the same forms as `uploadFile()`.
+Upload multiple files, a few at a time (`VAULT_UPLOAD_CONCURRENCY`, 3 by default). Each file is handled independently — one failure won't block the others. Every entry accepts the same forms as `uploadFile()`.
 
 ```javascript
 const results = await vault.uploadFiles(
@@ -71,6 +83,8 @@ const results = await vault.uploadFiles(
 // { status: "success", fileName: "file1.pdf", ... }
 // { status: "failed", fileName: "file2.jpg", error: "...", code: "..." }
 ```
+
+Partial failures are reported in the array. If **every** file fails, the call throws a `VaultError` with code `UPLOAD_FAILED` instead, carrying the same per-file results in `error.data.results`.
 
 ### File Retrieval
 

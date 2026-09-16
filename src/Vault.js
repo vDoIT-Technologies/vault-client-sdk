@@ -19,6 +19,41 @@ import {
 
 const WS_CHAT_PROTOCOL = "vault-chat";
 
+/** Storage hosts the presign step is allowed to point uploads at. */
+const DEFAULT_UPLOAD_HOSTS = ["s3.filebase.com", ".s3.filebase.com"];
+
+const DEFAULT_REQUEST_TIMEOUT = 30000;
+const DEFAULT_UPLOAD_CONCURRENCY = 3;
+const MAX_UPLOAD_CONCURRENCY = 10;
+
+/** Slowest upload we still wait for, used to derive a per-file timeout. */
+const ASSUMED_UPLOAD_BYTES_PER_SECOND = 100 * 1024;
+const MIN_UPLOAD_TIMEOUT = 60000;
+const MAX_UPLOAD_TIMEOUT = 2 * 60 * 60 * 1000;
+
+const isLocalHostname = (hostname) =>
+  ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname);
+
+/** Run `worker` over `items`, at most `limit` at a time, keeping input order. */
+async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  const runners = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    async () => {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        results[index] = await worker(items[index], index);
+      }
+    }
+  );
+
+  await Promise.all(runners);
+  return results;
+}
+
 const toBase64Url = (text) => {
   const base64 =
     typeof Buffer !== "undefined"
@@ -37,6 +72,11 @@ class Vault extends EventEmitter {
    * @param {string} config.VAULT_CLIENT_API_KEY - Your client-specific API key
    * @param {string} config.VAULT_BASE_URL - Base URL of the Vault API (e.g. "https://api.example.com")
    * @param {string} [config.VAULT_WS_URL] - WebSocket URL for real-time events (e.g. "wss://api.example.com/ws")
+   * @param {string} [config.VAULT_UPLOAD_ROOT] - Directory that file paths must stay inside (defaults to the working directory)
+   * @param {string|string[]} [config.VAULT_UPLOAD_HOSTS] - Extra storage hosts uploads may be sent to
+   * @param {number} [config.VAULT_TIMEOUT=30000] - Timeout in ms for API requests
+   * @param {number} [config.VAULT_UPLOAD_TIMEOUT] - Timeout in ms for one file upload (default: scaled to the file size)
+   * @param {number} [config.VAULT_UPLOAD_CONCURRENCY=3] - How many files upload at once in uploadFiles/uploadFilesToBot
    *
    * @throws {VaultError} If any required configuration parameter is missing
    *
@@ -55,6 +95,11 @@ class Vault extends EventEmitter {
     VAULT_CLIENT_API_KEY,
     VAULT_BASE_URL,
     VAULT_WS_URL,
+    VAULT_UPLOAD_ROOT,
+    VAULT_UPLOAD_HOSTS,
+    VAULT_TIMEOUT,
+    VAULT_UPLOAD_TIMEOUT,
+    VAULT_UPLOAD_CONCURRENCY,
   } = {}) {
     super();
 
@@ -80,8 +125,40 @@ class Vault extends EventEmitter {
     this.ws = null;
     this.botChatWs = null;
 
+    this.uploadRoot = VAULT_UPLOAD_ROOT || undefined;
+
+    const positive = (value, fallback) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number > 0 ? number : fallback;
+    };
+
+    this.requestTimeout = positive(VAULT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT);
+    this.uploadTimeout = positive(VAULT_UPLOAD_TIMEOUT, undefined);
+    this.uploadConcurrency = Math.min(
+      positive(VAULT_UPLOAD_CONCURRENCY, DEFAULT_UPLOAD_CONCURRENCY),
+      MAX_UPLOAD_CONCURRENCY
+    );
+
+    // Uploads may only go to storage hosts we expect, so a tampered presign
+    // response cannot redirect a file to someone else's server.
+    const extraHosts = Array.isArray(VAULT_UPLOAD_HOSTS)
+      ? VAULT_UPLOAD_HOSTS
+      : String(VAULT_UPLOAD_HOSTS || "")
+          .split(",")
+          .filter(Boolean);
+    this.allowedUploadHosts = [
+      ...DEFAULT_UPLOAD_HOSTS,
+      ...extraHosts.map((host) => String(host).trim().toLowerCase()),
+    ];
+    try {
+      this.allowedUploadHosts.push(new URL(this.baseUrl).hostname.toLowerCase());
+    } catch {
+      // A base URL that will not parse fails on the first request instead.
+    }
+
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
+      timeout: this.requestTimeout,
       headers: {
         "Content-Type": "application/json",
         "API-Key": this.apiKey,
@@ -143,6 +220,14 @@ class Vault extends EventEmitter {
           data,
         });
       } else if (error.request) {
+        if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
+          throw new VaultError(
+            `[Vault SDK] ${operation}: The request timed out after ${this.requestTimeout}ms. ` +
+              `Raise VAULT_TIMEOUT if your network needs longer.`,
+            { code: "REQUEST_TIMEOUT", operation }
+          );
+        }
+
         throw new VaultError(
           `[Vault SDK] ${operation}: No response received from the server. ` +
             `Please check your network connection and ensure VAULT_BASE_URL ("${this.baseUrl}") is correct.`,
@@ -828,6 +913,65 @@ class Vault extends EventEmitter {
    * @throws {VaultError} If the file is unreadable, invalid, or the upload fails at any step
    * @throws {ValidationError} If required parameters are missing/invalid
    */
+  /**
+   * Internal: check a presigned upload URL before sending any bytes to it.
+   *
+   * @param {string} rawUrl - URL returned by the presign step
+   * @param {string} operation - Calling method name
+   * @param {string} fileName - File name, used in error messages
+   * @returns {string} The URL to upload to
+   * @throws {VaultError} If the URL is malformed, not HTTPS, or on an unexpected host
+   */
+  _checkUploadUrl(rawUrl, operation, fileName) {
+    let parsed;
+    try {
+      parsed = new URL(String(rawUrl));
+    } catch {
+      throw new VaultError(
+        `[Vault SDK] '${operation}': The upload URL returned for "${fileName}" is not a valid URL.`,
+        { code: "UPLOAD_URL_REJECTED", operation }
+      );
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+
+    if (parsed.protocol !== "https:" && !isLocalHostname(hostname)) {
+      throw new VaultError(
+        `[Vault SDK] '${operation}': The upload URL returned for "${fileName}" is not HTTPS. ` +
+          `Refusing to send the file over an unencrypted connection.`,
+        { code: "UPLOAD_URL_REJECTED", operation }
+      );
+    }
+
+    const allowed = this.allowedUploadHosts.some((entry) =>
+      entry.startsWith(".") ? hostname.endsWith(entry) : hostname === entry
+    );
+
+    if (!allowed) {
+      throw new VaultError(
+        `[Vault SDK] '${operation}': The server returned an upload URL on an unexpected host ("${hostname}") for "${fileName}". ` +
+          `Add it to VAULT_UPLOAD_HOSTS if your deployment stores files there.`,
+        { code: "UPLOAD_URL_REJECTED", operation }
+      );
+    }
+
+    return parsed.toString();
+  }
+
+  /**
+   * Internal: how long to wait for one upload, scaled to the file size.
+   *
+   * @param {number} bytes - File size in bytes
+   * @returns {number} Timeout in milliseconds
+   */
+  _uploadTimeoutFor(bytes) {
+    if (this.uploadTimeout !== undefined) return this.uploadTimeout;
+
+    const scaled =
+      Math.ceil((Number(bytes) || 0) / ASSUMED_UPLOAD_BYTES_PER_SECOND) * 1000;
+    return Math.min(Math.max(MIN_UPLOAD_TIMEOUT, scaled), MAX_UPLOAD_TIMEOUT);
+  }
+
   async uploadFile(file, vaultId, parentId = null) {
     validator.validate(
       {
@@ -837,7 +981,9 @@ class Vault extends EventEmitter {
     );
 
     // Read the file and derive everything the upload needs from it.
-    const { buffer, name, type } = await resolveFile(file, "uploadFile");
+    const { buffer, name, type } = await resolveFile(file, "uploadFile", {
+      uploadRoot: this.uploadRoot,
+    });
     const fileSize = buffer.length;
 
     if (fileSize === 0) {
@@ -913,14 +1059,18 @@ class Vault extends EventEmitter {
           "x-amz-meta-file-size": fileSize.toString(),
         };
 
+    const uploadUrl = this._checkUploadUrl(url, "uploadFile", fileName);
+
     try {
-      await axios.put(url, buffer, {
+      await axios.put(uploadUrl, buffer, {
         headers: {
           "Content-Type": contentType || fileType,
           ...metaHeaders,
         },
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
+        maxRedirects: 0,
+        timeout: this._uploadTimeoutFor(fileSize),
       });
     } catch (error) {
       const status = error.response?.status;
@@ -970,7 +1120,9 @@ class Vault extends EventEmitter {
   /**
    * Upload multiple files to the vault in parallel.
    *
-   * Each file is uploaded independently. Failed uploads do not block others.
+   * Files upload a few at a time (VAULT_UPLOAD_CONCURRENCY, 3 by default) and
+   * each one is independent, so a single failure does not block the others.
+   * If every file fails, the call throws instead of returning an all-failed list.
    *
    * @param {Array<string|Object|Blob>} files - Array of files, in any form uploadFile() accepts
    * @param {string} vaultId - The vault ID to upload to
@@ -997,26 +1149,37 @@ class Vault extends EventEmitter {
       "uploadFiles"
     );
 
-    const uploadPromises = files.map(async (file, index) => {
-      const label =
-        baseName(
-          typeof file === "string" ? file : file?.name || file?.path || ""
-        ) || `file[${index}]`;
+    const results = await runWithConcurrency(
+      files,
+      this.uploadConcurrency,
+      async (file, index) => {
+        const label =
+          baseName(
+            typeof file === "string" ? file : file?.name || file?.path || ""
+          ) || `file[${index}]`;
 
-      try {
-        const result = await this.uploadFile(file, vaultId, parentId);
-        return { ...result, status: "success", fileName: label };
-      } catch (error) {
-        return {
-          status: "failed",
-          fileName: label,
-          error: error.message,
-          code: error.code || "UPLOAD_FAILED",
-        };
+        try {
+          const result = await this.uploadFile(file, vaultId, parentId);
+          return { ...result, status: "success", fileName: label };
+        } catch (error) {
+          return {
+            status: "failed",
+            fileName: label,
+            error: error.message,
+            code: error.code || "UPLOAD_FAILED",
+          };
+        }
       }
-    });
+    );
 
-    return await Promise.all(uploadPromises);
+    if (results.length && results.every((result) => result.status === "failed")) {
+      throw new VaultError(
+        `[Vault SDK] 'uploadFiles': All ${results.length} file${results.length === 1 ? "" : "s"} failed to upload.`,
+        { code: "UPLOAD_FAILED", operation: "uploadFiles", data: { results } }
+      );
+    }
+
+    return results;
   }
 
   // ─── File Retrieval ───────────────────────────────────────────
@@ -1915,7 +2078,9 @@ class Vault extends EventEmitter {
    * @private
    */
   async uploadSingleFileToBot(file, vaultId, botId) {
-    const resolved = await resolveFile(file, "uploadFilesToBot");
+    const resolved = await resolveFile(file, "uploadFilesToBot", {
+      uploadRoot: this.uploadRoot,
+    });
     const fileSize = resolved.buffer.length;
 
     if (fileSize > MAX_FILE_SIZE) {
@@ -1979,14 +2144,18 @@ class Vault extends EventEmitter {
           "x-amz-meta-file-size": fileSize.toString(),
         };
 
+    const uploadUrl = this._checkUploadUrl(url, "uploadFilesToBot", fileName);
+
     try {
-      await axios.put(url, resolved.buffer, {
+      await axios.put(uploadUrl, resolved.buffer, {
         headers: {
           "Content-Type": contentType || fileType,
           ...metaHeaders,
         },
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
+        maxRedirects: 0,
+        timeout: this._uploadTimeoutFor(fileSize),
       });
     } catch (error) {
       const status = error.response?.status;
@@ -2454,8 +2623,10 @@ class Vault extends EventEmitter {
       );
     }
 
-    const results = await Promise.all(
-      normalizedFiles.map(async (file, index) => {
+    const results = await runWithConcurrency(
+      normalizedFiles,
+      this.uploadConcurrency,
+      async (file, index) => {
         const label =
           baseName(
             typeof file === "string" ? file : file?.name || file?.path || ""
@@ -2472,7 +2643,7 @@ class Vault extends EventEmitter {
             code: error.code || "UPLOAD_FAILED",
           };
         }
-      })
+      }
     );
 
     const successful = results.filter((result) => result.status === "success");
