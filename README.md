@@ -537,6 +537,8 @@ const resultWithoutPlatform = await vault.importVault("vault-id");
 
 The SDK provides specific, actionable error messages. All errors include a `code` for programmatic handling.
 
+A `VaultError` from the server also carries a `requestId`. Server errors deliberately carry only a message, a code and that id — quote the id when you contact support, and the full detail is in the server's own logs.
+
 ```javascript
 import Vault, { VaultError, ValidationError } from "vault-sdk-dev";
 
@@ -550,9 +552,10 @@ try {
     console.error(error.param);   // "vaultId"
   } else if (error instanceof VaultError) {
     // API or network error
-    console.error(error.message); // "[Vault SDK] 'uploadFile': Authentication failed..."
-    console.error(error.code);    // "UNAUTHORIZED"
-    console.error(error.status);  // 401
+    console.error(error.message);   // "[Vault SDK] 'uploadFile': Authentication failed..."
+    console.error(error.code);      // "UNAUTHORIZED"
+    console.error(error.status);    // 401
+    console.error(error.requestId); // "9f1c…" — quote this to support
   }
 }
 ```
@@ -572,6 +575,10 @@ try {
 | `RATE_LIMITED` | Too many requests — slow down (429) |
 | `SERVER_ERROR` | Server-side error (500) |
 | `NETWORK_ERROR` | No response — check network/URL |
+| `REQUEST_TIMEOUT` | No reply within `VAULT_TIMEOUT` |
+| `INSECURE_TRANSPORT` | Base or WebSocket URL is not https/wss |
+| `PATH_NOT_ALLOWED` | File path resolved outside `VAULT_UPLOAD_ROOT` |
+| `UPLOAD_URL_REJECTED` | Presign returned an unexpected or unencrypted upload host |
 | `WEBSOCKET_ERROR` | WebSocket connection failed |
 | `STORAGE_UPLOAD_FAILED` | File failed to upload to storage |
 | `PRESIGN_FAILED` | Could not get upload URL |

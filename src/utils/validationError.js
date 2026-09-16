@@ -14,7 +14,10 @@ export class ValidationError extends Error {
     this.param = param;
     this.expectedType = expectedType;
 
-    Error.captureStackTrace(this, ValidationError);
+    // Chrome and Node only: Safari and older Firefox throw on it.
+    if (typeof Error.captureStackTrace === "function") {
+      Error.captureStackTrace(this, ValidationError);
+    }
   }
 }
 
@@ -23,21 +26,53 @@ export class ValidationError extends Error {
  * Wraps HTTP errors with status codes and structured error data.
  */
 export class VaultError extends Error {
-  constructor(message, { status, code, operation, data } = {}) {
+  constructor(message, { status, code, operation, data, requestId } = {}) {
     super(message);
     this.name = "VaultError";
     this.status = status || null;
     this.code = code || "VAULT_ERROR";
     this.operation = operation || null;
     this.data = data || null;
+    this.requestId = requestId || null;
 
-    Error.captureStackTrace(this, VaultError);
+    // Chrome and Node only: Safari and older Firefox throw on it.
+    if (typeof Error.captureStackTrace === "function") {
+      Error.captureStackTrace(this, VaultError);
+    }
   }
 }
 
 /**
  * Maps HTTP status codes to user-friendly error descriptions.
  */
+/**
+ * Reduce a server error body to what an integrator may safely see.
+ *
+ * Upstream bodies can carry stack traces, database table names and internal
+ * hostnames, so only the message, code and request id cross the boundary.
+ *
+ * @param {*} body - Response body from the server
+ * @returns {{message?: string, code?: string, requestId?: string}|null}
+ */
+export function safeErrorDetails(body) {
+  if (!body || typeof body !== "object") return null;
+
+  const text = (value) =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+  const details = {
+    message: text(body.message) ?? text(body.error),
+    code: text(body.code),
+    requestId: text(body.requestId) ?? text(body.request_id),
+  };
+
+  for (const key of Object.keys(details)) {
+    if (details[key] === undefined) delete details[key];
+  }
+
+  return Object.keys(details).length ? details : null;
+}
+
 export const HTTP_ERROR_MAP = {
   400: { code: "BAD_REQUEST", description: "The request was invalid. Check your parameters." },
   401: { code: "UNAUTHORIZED", description: "Authentication failed. Verify your VAULT_ACCESS_KEY and VAULT_SECRET_KEY." },

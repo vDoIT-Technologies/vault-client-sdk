@@ -7,6 +7,7 @@ import {
   ValidationError,
   VaultError,
   HTTP_ERROR_MAP,
+  safeErrorDetails,
 } from "./utils/validationError.js";
 import { sanitizeFileName } from "./utils/sanitizeFileName.js";
 import {
@@ -255,11 +256,16 @@ class Vault extends EventEmitter {
           ? `[Vault SDK] ${operation}: ${serverMessage}`
           : `[Vault SDK] ${operation}: ${errorInfo.description}`;
 
+        const details = safeErrorDetails(data);
+        const requestId =
+          details?.requestId || error.response.headers?.["x-request-id"] || null;
+
         throw new VaultError(message, {
           status,
           code: errorInfo.code,
           operation,
-          data,
+          data: details,
+          requestId,
         });
       } else if (error.request) {
         if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
@@ -1145,7 +1151,11 @@ class Vault extends EventEmitter {
     if (!url || !key) {
       throw new VaultError(
         `[Vault SDK] 'uploadFile': The server did not return an upload URL for "${fileName}".`,
-        { code: "PRESIGN_FAILED", operation: "uploadFile", data: presign }
+        {
+          code: "PRESIGN_FAILED",
+          operation: "uploadFile",
+          data: safeErrorDetails(presign),
+        }
       );
     }
 
@@ -2244,7 +2254,11 @@ class Vault extends EventEmitter {
     if (!url || !key) {
       throw new VaultError(
         `[Vault SDK] 'uploadFilesToBot': The server did not return an upload URL for "${fileName}".`,
-        { code: "PRESIGN_FAILED", operation: "uploadFilesToBot", data: presign }
+        {
+          code: "PRESIGN_FAILED",
+          operation: "uploadFilesToBot",
+          data: safeErrorDetails(presign),
+        }
       );
     }
 
