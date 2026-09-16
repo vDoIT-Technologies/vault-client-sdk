@@ -24,10 +24,15 @@ const vault = new Vault({
 
 Only the first four are required. The SDK will throw a clear error listing any missing ones.
 
+`VAULT_BASE_URL` and `VAULT_WS_URL` must be `https://` / `wss://`. An unencrypted URL is refused with `INSECURE_TRANSPORT`, because it would send your keys, signatures and file contents in the clear. Local addresses (`localhost`, `127.0.0.1`) are exempt, and `VAULT_ALLOW_INSECURE: true` lifts the rule for a test server you control.
+
+Your keys are held as non-enumerable properties, so `console.log(vault)` and `JSON.stringify(vault)` print `[redacted]` rather than the secret.
+
 These optional settings control uploads:
 
 | Option | Default | What it does |
 | --- | --- | --- |
+| `VAULT_ALLOW_INSECURE` | `false` | Allow `http://` / `ws://` to a non-local host |
 | `VAULT_UPLOAD_ROOT` | the working directory | Paths passed to `uploadFile()` must resolve inside this directory |
 | `VAULT_UPLOAD_HOSTS` | Filebase storage + your API host | Extra hosts the SDK may upload files to |
 | `VAULT_TIMEOUT` | `30000` | Timeout in ms for API requests |

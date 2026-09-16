@@ -34,6 +34,11 @@ const MAX_UPLOAD_TIMEOUT = 2 * 60 * 60 * 1000;
 const isLocalHostname = (hostname) =>
   ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname);
 
+const isEncryptedProtocol = (protocol) =>
+  protocol === "https:" || protocol === "wss:";
+
+const REDACTED = "[redacted]";
+
 /** Run `worker` over `items`, at most `limit` at a time, keeping input order. */
 async function runWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
@@ -72,6 +77,7 @@ class Vault extends EventEmitter {
    * @param {string} config.VAULT_CLIENT_API_KEY - Your client-specific API key
    * @param {string} config.VAULT_BASE_URL - Base URL of the Vault API (e.g. "https://api.example.com")
    * @param {string} [config.VAULT_WS_URL] - WebSocket URL for real-time events (e.g. "wss://api.example.com/ws")
+   * @param {boolean} [config.VAULT_ALLOW_INSECURE=false] - Allow http:// / ws:// to a non-local host (test servers only)
    * @param {string} [config.VAULT_UPLOAD_ROOT] - Directory that file paths must stay inside (defaults to the working directory)
    * @param {string|string[]} [config.VAULT_UPLOAD_HOSTS] - Extra storage hosts uploads may be sent to
    * @param {number} [config.VAULT_TIMEOUT=30000] - Timeout in ms for API requests
@@ -95,6 +101,7 @@ class Vault extends EventEmitter {
     VAULT_CLIENT_API_KEY,
     VAULT_BASE_URL,
     VAULT_WS_URL,
+    VAULT_ALLOW_INSECURE,
     VAULT_UPLOAD_ROOT,
     VAULT_UPLOAD_HOSTS,
     VAULT_TIMEOUT,
@@ -117,13 +124,40 @@ class Vault extends EventEmitter {
       );
     }
 
-    this.apiKey = VAULT_ACCESS_KEY;
-    this.apiSecret = VAULT_SECRET_KEY;
-    this.clientApiKey = VAULT_CLIENT_API_KEY;
+    // Hidden from enumeration so console.log(vault), JSON.stringify and APM
+    // snapshots cannot print the signing secret.
+    for (const [property, secret] of [
+      ["apiKey", VAULT_ACCESS_KEY],
+      ["apiSecret", VAULT_SECRET_KEY],
+      ["clientApiKey", VAULT_CLIENT_API_KEY],
+    ]) {
+      Object.defineProperty(this, property, {
+        value: secret,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+
     this.baseUrl = VAULT_BASE_URL;
     this.wsUrl = VAULT_WS_URL;
     this.ws = null;
     this.botChatWs = null;
+
+    this.allowInsecure = VAULT_ALLOW_INSECURE === true;
+
+    this._assertEncryptedTransport(
+      this.normalizeAbsoluteUrl(this.baseUrl),
+      "VAULT_BASE_URL",
+      "constructor"
+    );
+    if (this.wsUrl) {
+      this._assertEncryptedTransport(
+        this.normalizeAbsoluteUrl(this.wsUrl, "wss:"),
+        "VAULT_WS_URL",
+        "constructor"
+      );
+    }
 
     this.uploadRoot = VAULT_UPLOAD_ROOT || undefined;
 
@@ -156,13 +190,19 @@ class Vault extends EventEmitter {
       // A base URL that will not parse fails on the first request instead.
     }
 
-    this.httpClient = axios.create({
-      baseURL: this.baseUrl,
-      timeout: this.requestTimeout,
-      headers: {
-        "Content-Type": "application/json",
-        "API-Key": this.apiKey,
-      },
+    // Not enumerable either: its default headers carry the access key.
+    Object.defineProperty(this, "httpClient", {
+      value: axios.create({
+        baseURL: this.baseUrl,
+        timeout: this.requestTimeout,
+        headers: {
+          "Content-Type": "application/json",
+          "API-Key": this.apiKey,
+        },
+      }),
+      enumerable: false,
+      writable: true,
+      configurable: true,
     });
   }
 
@@ -457,7 +497,7 @@ class Vault extends EventEmitter {
    * Accepts http(s), ws(s), protocol-relative, root-relative, and bare host forms.
    * @private
    */
-  normalizeAbsoluteUrl(rawUrl, fallbackProtocol = "http:") {
+  normalizeAbsoluteUrl(rawUrl, fallbackProtocol = "https:") {
     const value = typeof rawUrl === "string" ? rawUrl.trim() : "";
     if (!value) {
       throw new VaultError(
@@ -503,7 +543,7 @@ class Vault extends EventEmitter {
 
     const normalizedBase = this.normalizeAbsoluteUrl(
       base,
-      typeof base === "string" && base.trim().startsWith("ws") ? "ws:" : "http:"
+      typeof base === "string" && base.trim().startsWith("ws") ? "wss:" : "https:"
     );
 
     const url = new URL(normalizedBase.toString());
@@ -518,8 +558,10 @@ class Vault extends EventEmitter {
     } else if (url.protocol === "http:") {
       url.protocol = "ws:";
     } else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
-      url.protocol = "ws:";
+      url.protocol = "wss:";
     }
+
+    this._assertEncryptedTransport(url, "The bot chat WebSocket URL", "connectToBotChat");
 
     return url.toString();
   }
@@ -913,6 +955,50 @@ class Vault extends EventEmitter {
    * @throws {VaultError} If the file is unreadable, invalid, or the upload fails at any step
    * @throws {ValidationError} If required parameters are missing/invalid
    */
+  /**
+   * Internal: refuse a URL that would carry credentials in the clear.
+   *
+   * @param {URL} parsed - The URL to check
+   * @param {string} label - What the URL is, used in the message
+   * @param {string} operation - Calling method name
+   * @returns {URL} The same URL, when it is acceptable
+   * @throws {VaultError} If the URL is unencrypted, non-local and not explicitly allowed
+   */
+  _assertEncryptedTransport(parsed, label, operation) {
+    if (
+      isEncryptedProtocol(parsed.protocol) ||
+      this.allowInsecure ||
+      isLocalHostname(parsed.hostname.toLowerCase())
+    ) {
+      return parsed;
+    }
+
+    throw new VaultError(
+      `[Vault SDK] ${operation}: ${label} uses "${parsed.protocol}//", so API keys, signatures and file contents would travel unencrypted. ` +
+        `Use https:// (or wss://), or set VAULT_ALLOW_INSECURE: true for a local test server.`,
+      { code: "INSECURE_TRANSPORT", operation }
+    );
+  }
+
+  /**
+   * A redacted view of this client, used by JSON.stringify and console.log.
+   *
+   * @returns {Object} Configuration with the secrets replaced
+   */
+  toJSON() {
+    return {
+      baseUrl: this.baseUrl,
+      wsUrl: this.wsUrl,
+      apiKey: REDACTED,
+      apiSecret: REDACTED,
+      clientApiKey: REDACTED,
+    };
+  }
+
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `Vault ${JSON.stringify(this.toJSON())}`;
+  }
+
   /**
    * Internal: check a presigned upload URL before sending any bytes to it.
    *
