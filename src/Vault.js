@@ -1989,12 +1989,12 @@ class Vault extends EventEmitter {
       },
       "setBotLlm"
     );
-    const payload = { vaultId, provider: config.provider, model: config.model };
+    const payload = { provider: config.provider, model: config.model };
     if (config.baseUrl !== undefined) payload.baseUrl = config.baseUrl;
     if (config.apiKey !== undefined) payload.apiKey = config.apiKey;
     const response = await this.request(
       "PUT",
-      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/llm`,
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/llm?vaultId=${encodeURIComponent(vaultId)}`,
       payload,
       { operation: "setBotLlm" }
     );
@@ -2025,14 +2025,62 @@ class Vault extends EventEmitter {
       },
       "testBotLlm"
     );
-    const payload = { vaultId, provider: config.provider, model: config.model };
+    const payload = { provider: config.provider, model: config.model };
     if (config.baseUrl !== undefined) payload.baseUrl = config.baseUrl;
     if (config.apiKey !== undefined) payload.apiKey = config.apiKey;
     const response = await this.request(
       "POST",
-      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/llm/test`,
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/llm/test?vaultId=${encodeURIComponent(vaultId)}`,
       payload,
       { operation: "testBotLlm" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Enable or disable a bot's saved custom LLM configuration.
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @param {boolean} enabled - Whether custom LLM responses should be used
+   * @returns {Promise<Object>} Updated bot response
+   */
+  async setBotLlmEnabled(vaultId, botId, enabled) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+        enabled: { value: enabled, type: "boolean" },
+      },
+      "setBotLlmEnabled"
+    );
+    const response = await this.request(
+      "PATCH",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/llm/enabled?vaultId=${encodeURIComponent(vaultId)}`,
+      { enabled },
+      { operation: "setBotLlmEnabled" }
+    );
+    return response.data;
+  }
+
+  /**
+   * Remove a bot's saved custom LLM configuration and credentials.
+   * @param {string} vaultId - The vault ID that owns the bot
+   * @param {string} botId - The bot ID
+   * @returns {Promise<Object>} Updated bot response
+   */
+  async clearBotLlm(vaultId, botId) {
+    validator.validate(
+      {
+        vaultId: { value: vaultId, type: "string" },
+        botId: { value: botId, type: "string" },
+      },
+      "clearBotLlm"
+    );
+    const response = await this.request(
+      "DELETE",
+      `/v1/vault-sdk/bots/${encodeURIComponent(botId)}/llm?vaultId=${encodeURIComponent(vaultId)}`,
+      undefined,
+      { operation: "clearBotLlm" }
     );
     return response.data;
   }

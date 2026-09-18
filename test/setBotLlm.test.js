@@ -5,12 +5,14 @@ import Vault from "../src/Vault.js";
 const call = (request, ...args) => Vault.prototype.setBotLlm.call({ request }, ...args);
 const getProviders = (request, ...args) => Vault.prototype.getLlmProviders.call({ request }, ...args);
 const testLlm = (request, ...args) => Vault.prototype.testBotLlm.call({ request }, ...args);
+const setEnabled = (request, ...args) => Vault.prototype.setBotLlmEnabled.call({ request }, ...args);
+const clear = (request, ...args) => Vault.prototype.clearBotLlm.call({ request }, ...args);
 
 test("tests an LLM configuration without saving it", async () => {
   const response = { data: { valid: true } };
   const result = await testLlm(async (...args) => {
-    assert.deepEqual(args, ["POST", "/v1/vault-sdk/bots/bot%2F1/llm/test", {
-      vaultId: "vault-1", provider: "OPENAI", model: "gpt-5.6-terra", apiKey: "test-key",
+    assert.deepEqual(args, ["POST", "/v1/vault-sdk/bots/bot%2F1/llm/test?vaultId=vault-1", {
+      provider: "OPENAI", model: "gpt-5.6-terra", apiKey: "test-key",
     }, { operation: "testBotLlm" }]);
     return { data: response };
   }, "vault-1", "bot/1", { provider: "OPENAI", model: "gpt-5.6-terra", apiKey: "test-key" });
@@ -33,8 +35,8 @@ test("requires a vault ID to get the provider catalog", async () => {
 test("sends the custom LLM configuration to the encoded bot route and preserves the response", async () => {
   const response = { data: { llm: { enabled: true, apiKeyHint: "***1234" } } };
   const result = await call(async (...args) => {
-    assert.deepEqual(args, ["PUT", "/v1/vault-sdk/bots/bot%2F1/llm", {
-      vaultId: "vault-1", provider: "CUSTOM", model: "my-model",
+    assert.deepEqual(args, ["PUT", "/v1/vault-sdk/bots/bot%2F1/llm?vaultId=vault-1", {
+      provider: "CUSTOM", model: "my-model",
       baseUrl: "https://provider.example/v1", apiKey: "test-key",
     }, { operation: "setBotLlm" }]);
     return { data: response };
@@ -47,7 +49,7 @@ test("sends the custom LLM configuration to the encoded bot route and preserves 
 
 test("omits the provider key when reusing saved credentials", async () => {
   await call(async (_method, _path, body) => {
-    assert.deepEqual(body, { vaultId: "vault-1", provider: "OPENAI", model: "my-model" });
+    assert.deepEqual(body, { provider: "OPENAI", model: "my-model" });
     return { data: {} };
   }, "vault-1", "bot-1", { provider: "OPENAI", model: "my-model" });
 });
@@ -70,4 +72,36 @@ test("propagates verification and ownership failures", async () => {
   await assert.rejects(call(async () => { throw failure; }, "vault", "bot", {
     provider: "OPENAI", model: "model",
   }), (error) => error === failure);
+});
+
+test("enables or disables a saved custom LLM", async () => {
+  const response = { data: { llm: { enabled: false } } };
+  const result = await setEnabled(async (...args) => {
+    assert.deepEqual(args, ["PATCH", "/v1/vault-sdk/bots/bot%2F1/llm/enabled?vaultId=vault-1", {
+      enabled: false,
+    }, { operation: "setBotLlmEnabled" }]);
+    return { data: response };
+  }, "vault-1", "bot/1", false);
+  assert.equal(result, response);
+});
+
+test("rejects a non-boolean custom LLM enabled value", async () => {
+  await assert.rejects(
+    setEnabled(() => assert.fail("unexpected request"), "vault", "bot", "false"),
+    { name: "ValidationError" }
+  );
+});
+
+test("clears a bot's saved custom LLM configuration", async () => {
+  const response = { data: { llm: { enabled: false, provider: null } } };
+  const result = await clear(async (...args) => {
+    assert.deepEqual(args, [
+      "DELETE",
+      "/v1/vault-sdk/bots/bot%2F1/llm?vaultId=vault-1",
+      undefined,
+      { operation: "clearBotLlm" },
+    ]);
+    return { data: response };
+  }, "vault-1", "bot/1");
+  assert.equal(result, response);
 });

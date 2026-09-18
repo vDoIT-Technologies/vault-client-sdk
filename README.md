@@ -608,7 +608,7 @@ saving, encrypts the key, and returns the updated bot with a masked key hint.
 The server must have `BOT_LLM_ENCRYPTION_KEY` configured. Saving enables the
 custom LLM for subsequent chat requests.
 
-Uses `PUT /v1/vault-sdk/bots/:botId/llm` through the SDK backend proxy.
+Uses `PUT /v1/vault-sdk/bots/:botId/llm?vaultId=:vaultId` through the SDK backend proxy.
 
 #### `testBotLlm(vaultId, botId, config)`
 
@@ -623,7 +623,28 @@ const result = await vault.testBotLlm("your-vault-id", "bot-id", {
 });
 ```
 
-Uses `POST /v1/vault-sdk/bots/:botId/llm/test` through the SDK backend proxy.
+Uses `POST /v1/vault-sdk/bots/:botId/llm/test?vaultId=:vaultId` through the SDK backend proxy.
+
+#### `setBotLlmEnabled(vaultId, botId, enabled)`
+
+Turn a saved custom LLM on or off without deleting its provider credentials.
+
+```js
+await vault.setBotLlmEnabled("your-vault-id", "bot-id", false);
+```
+
+Uses `PATCH /v1/vault-sdk/bots/:botId/llm/enabled?vaultId=:vaultId` through the SDK backend proxy.
+
+#### `clearBotLlm(vaultId, botId)`
+
+Remove the bot's saved custom LLM provider, model, API key, and verification state.
+This is irreversible; use `setBotLlmEnabled(..., false)` when you only want to pause it.
+
+```js
+await vault.clearBotLlm("your-vault-id", "bot-id");
+```
+
+Uses `DELETE /v1/vault-sdk/bots/:botId/llm?vaultId=:vaultId` through the SDK backend proxy.
 
 #### `getLlmProviders(vaultId)`
 
