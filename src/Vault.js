@@ -1773,8 +1773,8 @@ class Vault extends EventEmitter {
 
     const response = await this.request(
       "POST",
-      "/v1/vault-sdk/add-to-starred",
-      { vaultId, fileId, isStarred },
+      "/v1/vault-sdk/favorites",
+      { vaultId, assetId: fileId, isFavorite: isStarred },
       { operation: "addToStarred" }
     );
     return response.data;
@@ -1800,7 +1800,7 @@ class Vault extends EventEmitter {
     const queryString = `?vaultId=${encodeURIComponent(vaultId)}`;
     const response = await this.request(
       "GET",
-      `/v1/vault-sdk/get-starred-files${queryString}`,
+      `/v1/vault-sdk/favorites${queryString}`,
       undefined,
       { operation: "getStarredFiles" }
     );
@@ -1824,12 +1824,19 @@ class Vault extends EventEmitter {
    * const sdkUser = await vault.createVault("user@example.com"); // platform-less SDK user link
    */
   async createVault(email, platformId) {
+    const normalizedEmail =
+      typeof email === "string" ? email.trim() : email;
     const normalizedPlatformId =
       typeof platformId === "string" ? platformId.trim() : platformId;
 
     validator.validate(
       {
-        email: { value: email, type: "string" },
+        email: {
+          value: normalizedEmail,
+          type: "string",
+          message:
+            "[Vault SDK] 'createVault' requires 'email' to be a non-empty string.",
+        },
         platformId: {
           value: normalizedPlatformId || undefined,
           type: "string",
@@ -1839,7 +1846,7 @@ class Vault extends EventEmitter {
       "createVault"
     );
 
-    const payload = { email };
+    const payload = { email: normalizedEmail };
     if (normalizedPlatformId) {
       payload.platformId = normalizedPlatformId;
     }
@@ -1912,6 +1919,8 @@ class Vault extends EventEmitter {
    * });
    */
   async createBot(vaultId, bot) {
+    const normalizedVaultId =
+      typeof vaultId === "string" ? vaultId.trim() : vaultId;
 
     const normalizedBot = {
       ...bot,
@@ -1921,7 +1930,12 @@ class Vault extends EventEmitter {
 
     validator.validate(
       {
-        vaultId: { value: vaultId, type: "string" },
+        vaultId: {
+          value: normalizedVaultId,
+          type: "string",
+          message:
+            "[Vault SDK] 'createBot' requires 'vaultId' to be a non-empty string.",
+        },
         bot: { value: normalizedBot, type: "object" },
         name: {
           value: normalizedBot.name,
@@ -1944,7 +1958,7 @@ class Vault extends EventEmitter {
     );
 
     const payload = {
-      vaultId,
+      vaultId: normalizedVaultId,
       name: bot.name.trim(),
     };
 
@@ -2061,9 +2075,21 @@ class Vault extends EventEmitter {
   async getBotFileText(vaultId, botId, fileId) {
     validator.validate(
       {
-        vaultId: { value: vaultId, type: "string" },
-        botId: { value: botId, type: "string" },
-        fileId: { value: fileId, type: "string" },
+        vaultId: {
+          value: vaultId,
+          type: "string",
+          message: "[Vault SDK] 'getBotFileText' requires 'vaultId' to be a non-empty string.",
+        },
+        botId: {
+          value: botId,
+          type: "string",
+          message: "[Vault SDK] 'getBotFileText' requires 'botId' to be a non-empty string.",
+        },
+        fileId: {
+          value: fileId,
+          type: "string",
+          message: "[Vault SDK] 'getBotFileText' requires 'fileId' to be a non-empty string.",
+        },
       },
       "getBotFileText"
     );
