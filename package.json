@@ -1,23 +1,26 @@
 {
   "name": "vault-sdk-staging",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Vault SDK — File storage client for uploading, managing, and organizing files in your vault",
   "main": "index.js",
   "type": "module",
+  "files": [
+    "index.js",
+    "src",
+    "README.md"
+  ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "vDoIT Technologies Ltd, Sector 66, Gurugram, Haryana 122011, India",
   "contributors": [
-    "Shreyash Gupta <shreyashgupta125@gmail.com>"
+    "Shreyash Gupta <shreyashgupta125@gmail.com>",
+    "Pinki Mondal <pinki2021.vdoit@gmail.com>"
   ],
   "license": "ISC",
   "dependencies": {
-    "axios": "^1.7.5",
+    "axios": "^1.6.0",
     "ws": "^8.18.0"
-  },
-  "peerDependencies": {
-    "axios": "^1.6.0"
   },
   "keywords": [
     "vault",
