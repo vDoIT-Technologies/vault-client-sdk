@@ -119,7 +119,14 @@ export const validator = {
         );
       }
 
-      if ((value === undefined || value === null) && !required) {
+      // An optional string left empty means "not supplied"; the string type
+      // rejects "", so without this `getFiles(vaultId)` throws on its own default.
+      const omitted =
+        value === undefined ||
+        value === null ||
+        (type === "string" && typeof value === "string" && value.trim() === "");
+
+      if (omitted && !required) {
         return;
       }
 
