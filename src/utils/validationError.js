@@ -86,6 +86,26 @@ export const HTTP_ERROR_MAP = {
   503: { code: "SERVICE_UNAVAILABLE", description: "The service is temporarily unavailable. Please try again later." },
 };
 
+// `typeof ""` and `typeof "abc"` both read as "string", which turns a rejected
+// empty field into "must be a valid string. Received: string." Name what was
+// actually wrong with the value instead.
+const describe = (value) => {
+  if (typeof value === "string") {
+    if (value === "") return "an empty string";
+    if (value.trim() === "") return "a blank string";
+    return "string";
+  }
+  if (Array.isArray(value)) return value.length === 0 ? "an empty array" : "array";
+  if (value === null) return "null";
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "NaN";
+    if (!Number.isFinite(value)) return String(value);
+    if (value < 0) return `a negative number (${value})`;
+    if (!Number.isInteger(value)) return `a decimal (${value})`;
+  }
+  return typeof value;
+};
+
 export const validator = {
   types: {
     string: (value) => typeof value === "string" && value.trim() !== "",
@@ -119,7 +139,14 @@ export const validator = {
         );
       }
 
-      if ((value === undefined || value === null) && !required) {
+      // An optional string left empty means "not supplied"; the string type
+      // rejects "", so without this `getFiles(vaultId)` throws on its own default.
+      const omitted =
+        value === undefined ||
+        value === null ||
+        (type === "string" && typeof value === "string" && value.trim() === "");
+
+      if (omitted && !required) {
         return;
       }
 
@@ -134,11 +161,16 @@ export const validator = {
 
       const typeValidator = this.types[type];
       if (typeValidator && !typeValidator(value)) {
+        const blank =
+          type === "string" && typeof value === "string" && value.trim() === "";
         throw new ValidationError(
           operation,
           param,
           type,
-          message || `[Vault SDK] '${operation}': Parameter '${param}' must be a valid ${type}. Received: ${typeof value}.`
+          message ||
+            (blank
+              ? `[Vault SDK] '${operation}' requires a non-empty '${param}'.`
+              : `[Vault SDK] '${operation}': Parameter '${param}' must be a valid ${type}. Received: ${describe(value)}.`)
         );
       }
 
