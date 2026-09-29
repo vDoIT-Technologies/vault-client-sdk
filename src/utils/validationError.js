@@ -14,7 +14,10 @@ export class ValidationError extends Error {
     this.param = param;
     this.expectedType = expectedType;
 
-    Error.captureStackTrace(this, ValidationError);
+    // Chrome and Node only: Safari and older Firefox throw on it.
+    if (typeof Error.captureStackTrace === "function") {
+      Error.captureStackTrace(this, ValidationError);
+    }
   }
 }
 
@@ -23,21 +26,53 @@ export class ValidationError extends Error {
  * Wraps HTTP errors with status codes and structured error data.
  */
 export class VaultError extends Error {
-  constructor(message, { status, code, operation, data } = {}) {
+  constructor(message, { status, code, operation, data, requestId } = {}) {
     super(message);
     this.name = "VaultError";
     this.status = status || null;
     this.code = code || "VAULT_ERROR";
     this.operation = operation || null;
     this.data = data || null;
+    this.requestId = requestId || null;
 
-    Error.captureStackTrace(this, VaultError);
+    // Chrome and Node only: Safari and older Firefox throw on it.
+    if (typeof Error.captureStackTrace === "function") {
+      Error.captureStackTrace(this, VaultError);
+    }
   }
 }
 
 /**
  * Maps HTTP status codes to user-friendly error descriptions.
  */
+/**
+ * Reduce a server error body to what an integrator may safely see.
+ *
+ * Upstream bodies can carry stack traces, database table names and internal
+ * hostnames, so only the message, code and request id cross the boundary.
+ *
+ * @param {*} body - Response body from the server
+ * @returns {{message?: string, code?: string, requestId?: string}|null}
+ */
+export function safeErrorDetails(body) {
+  if (!body || typeof body !== "object") return null;
+
+  const text = (value) =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+  const details = {
+    message: text(body.message) ?? text(body.error),
+    code: text(body.code),
+    requestId: text(body.requestId) ?? text(body.request_id),
+  };
+
+  for (const key of Object.keys(details)) {
+    if (details[key] === undefined) delete details[key];
+  }
+
+  return Object.keys(details).length ? details : null;
+}
+
 export const HTTP_ERROR_MAP = {
   400: { code: "BAD_REQUEST", description: "The request was invalid. Check your parameters." },
   401: { code: "UNAUTHORIZED", description: "Authentication failed. Verify your VAULT_ACCESS_KEY and VAULT_SECRET_KEY." },
@@ -51,12 +86,33 @@ export const HTTP_ERROR_MAP = {
   503: { code: "SERVICE_UNAVAILABLE", description: "The service is temporarily unavailable. Please try again later." },
 };
 
+// `typeof ""` and `typeof "abc"` both read as "string", which turns a rejected
+// empty field into "must be a valid string. Received: string." Name what was
+// actually wrong with the value instead.
+const describe = (value) => {
+  if (typeof value === "string") {
+    if (value === "") return "an empty string";
+    if (value.trim() === "") return "a blank string";
+    return "string";
+  }
+  if (Array.isArray(value)) return value.length === 0 ? "an empty array" : "array";
+  if (value === null) return "null";
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "NaN";
+    if (!Number.isFinite(value)) return String(value);
+    if (value < 0) return `a negative number (${value})`;
+    if (!Number.isInteger(value)) return `a decimal (${value})`;
+  }
+  return typeof value;
+};
+
 export const validator = {
   types: {
     string: (value) => typeof value === "string" && value.trim() !== "",
     object: (value) => typeof value === "object" && value !== null,
     array: (value) => Array.isArray(value) && value.length > 0,
-    number: (value) => typeof value === "number" && !isNaN(value) && value >= 0,
+    number: (value) => Number.isFinite(value) && value >= 0,
+    integer: (value) => Number.isInteger(value) && value >= 0,
     boolean: (value) => typeof value === "boolean",
     function: (value) => typeof value === "function",
     buffer: (value) => Buffer.isBuffer(value) || (value instanceof Uint8Array),
@@ -71,9 +127,26 @@ export const validator = {
     }
 
     Object.entries(params).forEach(([param, config]) => {
-      const { value, type, required = true, custom, message } = config;
+      const { value, type, required = true, custom, message, rejectNull } = config;
 
-      if ((value === undefined || value === null) && !required) {
+      if (value === null && rejectNull) {
+        throw new ValidationError(
+          operation,
+          param,
+          type,
+          message ||
+            `[Vault SDK] '${operation}': Parameter '${param}' must be a valid ${type}, or be left out entirely. Received: null.`
+        );
+      }
+
+      // An optional string left empty means "not supplied"; the string type
+      // rejects "", so without this `getFiles(vaultId)` throws on its own default.
+      const omitted =
+        value === undefined ||
+        value === null ||
+        (type === "string" && typeof value === "string" && value.trim() === "");
+
+      if (omitted && !required) {
         return;
       }
 
@@ -88,11 +161,16 @@ export const validator = {
 
       const typeValidator = this.types[type];
       if (typeValidator && !typeValidator(value)) {
+        const blank =
+          type === "string" && typeof value === "string" && value.trim() === "";
         throw new ValidationError(
           operation,
           param,
           type,
-          message || `[Vault SDK] '${operation}': Parameter '${param}' must be a valid ${type}. Received: ${typeof value}.`
+          message ||
+            (blank
+              ? `[Vault SDK] '${operation}' requires a non-empty '${param}'.`
+              : `[Vault SDK] '${operation}': Parameter '${param}' must be a valid ${type}. Received: ${describe(value)}.`)
         );
       }
 
